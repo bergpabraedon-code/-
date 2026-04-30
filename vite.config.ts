@@ -1,6 +1,15 @@
 import react from "@vitejs/plugin-react";
 import { Buffer } from "node:buffer";
+import {
+  createHash,
+  randomBytes,
+  randomUUID,
+  scryptSync,
+  timingSafeEqual,
+} from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { join } from "node:path";
 import { defineConfig, type PluginOption, type ViteDevServer } from "vite";
 
 type ImageProtocol =
@@ -33,13 +42,88 @@ type GenerateRequest = {
   referenceImages?: ReferenceImage[];
 };
 
+type GenerateBody = {
+  baseUrl?: string;
+  apiKey?: string;
+  clientId?: string;
+  request?: GenerateRequest & {
+    batchId?: string;
+    index?: number;
+    total?: number;
+  };
+};
+
+type AdminUser = {
+  username: string;
+  passwordHash: string;
+  salt: string;
+  mustChangePassword: boolean;
+  createdAt: number;
+  updatedAt: number;
+};
+
+type RequestLogStatus = "running" | "success" | "error";
+
+type RequestLog = {
+  requestId: string;
+  batchId?: string;
+  batchIndex?: number;
+  batchTotal?: number;
+  clientId: string;
+  clientUserAgent: string;
+  clientIpHash: string;
+  protocol: ImageProtocol;
+  apiBaseUrl: string;
+  endpoint: string;
+  model: string;
+  prompt: string;
+  negativePrompt?: string;
+  aspectRatio?: string;
+  size?: string;
+  quality?: string;
+  outputFormat?: string;
+  seed?: string;
+  referenceCount: number;
+  status: RequestLogStatus;
+  httpStatus?: number;
+  errorMessage?: string;
+  errorType?: string;
+  errorCode?: string;
+  errorRaw?: string;
+  createdAt: number;
+  startedAt?: number;
+  finishedAt?: number;
+  durationMs?: number;
+  imageSaved: false;
+};
+
+type AdminAuditLog = {
+  id: string;
+  action: string;
+  username: string;
+  createdAt: number;
+  detail?: string;
+};
+
+type AdminStore = {
+  admins: AdminUser[];
+  requestLogs: RequestLog[];
+  auditLogs: AdminAuditLog[];
+};
+
 const API_TIMEOUT_MS = 300_000;
 const MAX_REQUEST_BYTES = 60 * 1024 * 1024;
 const DEFAULT_PROTOCOL: ImageProtocol = "custom-openai";
+const SESSION_COOKIE = "image_studio_admin_session";
+const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
+const DATA_DIR = join(process.cwd(), ".data");
+const ADMIN_STORE_PATH = join(DATA_DIR, "admin-store.json");
+
+const adminSessions = new Map<string, { username: string; expiresAt: number }>();
 
 const DEFAULT_MODELS: Record<ImageProtocol, string[]> = {
-  "custom-openai": ["gpt-image-1", "gpt-image-2"],
-  "openai-images": ["gpt-image-1"],
+  "custom-openai": ["gpt-image-2", "gpt-5.4-image-2"],
+  "openai-images": ["gpt-image-2", "gpt-5.4-image-2"],
   "openai-responses": ["gpt-4.1", "gpt-4.1-mini"],
   "gemini-native": ["gemini-2.5-flash-image", "gemini-2.0-flash-preview-image-generation"],
   "gemini-openai": ["gemini-2.5-flash-image"],
@@ -82,6 +166,176 @@ function sendJson(res: ServerResponse, status: number, payload: unknown) {
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(JSON.stringify(payload));
+}
+
+function hashPassword(password: string, salt = randomBytes(16).toString("hex")) {
+  const derived = scryptSync(password, salt, 64).toString("hex");
+  return { salt, passwordHash: derived };
+}
+
+function verifyPassword(password: string, user: AdminUser) {
+  const derived = scryptSync(password, user.salt, 64);
+  const stored = Buffer.from(user.passwordHash, "hex");
+  return stored.length === derived.length && timingSafeEqual(stored, derived);
+}
+
+function emptyStore(): AdminStore {
+  return {
+    admins: [],
+    requestLogs: [],
+    auditLogs: [],
+  };
+}
+
+function ensureAdminStore() {
+  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+  if (!existsSync(ADMIN_STORE_PATH)) {
+    const username = process.env.ADMIN_USERNAME || "admin";
+    const initialPassword = process.env.ADMIN_INITIAL_PASSWORD || "admin123456";
+    const { salt, passwordHash } = hashPassword(initialPassword);
+    const now = Date.now();
+    const store: AdminStore = {
+      admins: [{
+        username,
+        salt,
+        passwordHash,
+        mustChangePassword: true,
+        createdAt: now,
+        updatedAt: now,
+      }],
+      requestLogs: [],
+      auditLogs: [{
+        id: randomUUID(),
+        action: "admin_initialized",
+        username,
+        createdAt: now,
+        detail: "Default administrator created. Password reset required on first login.",
+      }],
+    };
+    writeFileSync(ADMIN_STORE_PATH, JSON.stringify(store, null, 2));
+  }
+}
+
+function readAdminStore(): AdminStore {
+  ensureAdminStore();
+  try {
+    return { ...emptyStore(), ...JSON.parse(readFileSync(ADMIN_STORE_PATH, "utf8")) };
+  } catch {
+    return emptyStore();
+  }
+}
+
+function writeAdminStore(store: AdminStore) {
+  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+  writeFileSync(ADMIN_STORE_PATH, JSON.stringify(store, null, 2));
+}
+
+function appendAuditLog(username: string, action: string, detail?: string) {
+  const store = readAdminStore();
+  store.auditLogs.unshift({
+    id: randomUUID(),
+    username,
+    action,
+    detail,
+    createdAt: Date.now(),
+  });
+  store.auditLogs = store.auditLogs.slice(0, 500);
+  writeAdminStore(store);
+}
+
+function createSession(username: string) {
+  const token = randomBytes(32).toString("hex");
+  adminSessions.set(token, { username, expiresAt: Date.now() + SESSION_TTL_MS });
+  return token;
+}
+
+function cookieValue(req: IncomingMessage, name: string) {
+  const cookies = req.headers.cookie || "";
+  return cookies.split(";").map((item) => item.trim()).find((item) => item.startsWith(`${name}=`))?.slice(name.length + 1) || "";
+}
+
+function getAdminSession(req: IncomingMessage) {
+  const token = cookieValue(req, SESSION_COOKIE);
+  if (!token) return null;
+  const session = adminSessions.get(token);
+  if (!session || session.expiresAt < Date.now()) {
+    adminSessions.delete(token);
+    return null;
+  }
+  session.expiresAt = Date.now() + SESSION_TTL_MS;
+  return { token, ...session };
+}
+
+function setSessionCookie(res: ServerResponse, token: string) {
+  res.setHeader("Set-Cookie", `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.round(SESSION_TTL_MS / 1000)}`);
+}
+
+function clearSessionCookie(res: ServerResponse) {
+  res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`);
+}
+
+function hashClientIp(req: IncomingMessage) {
+  const ip = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "");
+  return createHash("sha256").update(ip).digest("hex").slice(0, 16);
+}
+
+function truncateText(value: unknown, max = 2000) {
+  const text = typeof value === "string" ? value : JSON.stringify(value ?? "");
+  return text.slice(0, max);
+}
+
+function safeErrorSummary(detail: unknown) {
+  const record = detail && typeof detail === "object" ? detail as Record<string, unknown> : {};
+  const error = record.error && typeof record.error === "object" ? record.error as Record<string, unknown> : {};
+  return {
+    message: truncateText(
+      typeof record.error === "string"
+        ? record.error
+        : typeof error.message === "string"
+          ? error.message
+          : typeof detail === "string"
+            ? detail
+            : "请求失败",
+      800,
+    ),
+    type: typeof error.type === "string" ? error.type : undefined,
+    code: typeof error.code === "string" ? error.code : undefined,
+    raw: truncateText(detail, 2500)
+      .replace(/data:image\/[a-zA-Z+.-]+;base64,[A-Za-z0-9+/=]+/g, "[image-data-redacted]")
+      .replace(/"b64_json"\s*:\s*"[^"]+"/g, "\"b64_json\":\"[image-data-redacted]\"")
+      .replace(/"data"\s*:\s*"[A-Za-z0-9+/=]{180,}"/g, "\"data\":\"[large-data-redacted]\""),
+  };
+}
+
+function createRequestLog(log: RequestLog) {
+  const store = readAdminStore();
+  store.requestLogs.unshift(log);
+  store.requestLogs = store.requestLogs.slice(0, 5000);
+  writeAdminStore(store);
+}
+
+function updateRequestLog(requestId: string, patch: Partial<RequestLog>) {
+  const store = readAdminStore();
+  store.requestLogs = store.requestLogs.map((record) =>
+    record.requestId === requestId ? { ...record, ...patch } : record,
+  );
+  writeAdminStore(store);
+}
+
+function generationEndpointLabel(protocol: ImageProtocol, model = "") {
+  if (protocol === "openai-responses") return "/v1/responses";
+  if (protocol === "gemini-native") return `/models/${modelName(model)}:generateContent`;
+  if (protocol === "google-imagen") return `/models/${modelName(model)}:predict`;
+  if (protocol === "stability-core") {
+    return String(model).includes("ultra")
+      ? "/v2beta/stable-image/generate/ultra"
+      : "/v2beta/stable-image/generate/core";
+  }
+  return protocol === "gemini-openai" ? "/images/generations" : "/v1/images/generations";
+}
+
+function getNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = API_TIMEOUT_MS) {
@@ -518,6 +772,158 @@ function imageProxyPlugin(): PluginOption {
   return {
     name: "image-api-proxy",
     configureServer(server: ViteDevServer) {
+      ensureAdminStore();
+      server.middlewares.use("/api/admin", async (req, res) => {
+        const path = (req.url || "/").split("?")[0] || "/";
+        const session = getAdminSession(req);
+        const store = readAdminStore();
+
+        try {
+          if (path === "/login" && req.method === "POST") {
+            const body = await readJsonBody(req);
+            const username = getString(body, "username");
+            const password = getString(body, "password");
+            const user = store.admins.find((admin) => admin.username === username);
+            if (!user || !verifyPassword(password, user)) {
+              sendJson(res, 401, { ok: false, error: "账号或密码错误" });
+              return;
+            }
+            const token = createSession(user.username);
+            setSessionCookie(res, token);
+            appendAuditLog(user.username, "admin_login");
+            sendJson(res, 200, {
+              ok: true,
+              user: {
+                username: user.username,
+                mustChangePassword: user.mustChangePassword,
+              },
+            });
+            return;
+          }
+
+          if (path === "/logout" && req.method === "POST") {
+            if (session) adminSessions.delete(session.token);
+            clearSessionCookie(res);
+            sendJson(res, 200, { ok: true });
+            return;
+          }
+
+          if (!session) {
+            sendJson(res, 401, { ok: false, error: "未登录" });
+            return;
+          }
+
+          const user = store.admins.find((admin) => admin.username === session.username);
+          if (!user) {
+            sendJson(res, 401, { ok: false, error: "管理员不存在" });
+            return;
+          }
+
+          if (path === "/me" && req.method === "GET") {
+            sendJson(res, 200, {
+              ok: true,
+              user: {
+                username: user.username,
+                mustChangePassword: user.mustChangePassword,
+              },
+            });
+            return;
+          }
+
+          if (path === "/change-password" && req.method === "POST") {
+            const body = await readJsonBody(req);
+            const oldPassword = getString(body, "oldPassword");
+            const newPassword = getString(body, "newPassword");
+            if (!verifyPassword(oldPassword, user)) {
+              sendJson(res, 400, { ok: false, error: "旧密码不正确" });
+              return;
+            }
+            if (newPassword.length < 8 || !/[A-Za-z]/.test(newPassword) || !/\d/.test(newPassword)) {
+              sendJson(res, 400, { ok: false, error: "新密码至少 8 位，并包含字母和数字" });
+              return;
+            }
+            const { salt, passwordHash } = hashPassword(newPassword);
+            const nextStore = readAdminStore();
+            nextStore.admins = nextStore.admins.map((admin) =>
+              admin.username === user.username
+                ? { ...admin, salt, passwordHash, mustChangePassword: false, updatedAt: Date.now() }
+                : admin,
+            );
+            writeAdminStore(nextStore);
+            appendAuditLog(user.username, "admin_password_changed");
+            sendJson(res, 200, { ok: true });
+            return;
+          }
+
+          if (user.mustChangePassword) {
+            sendJson(res, 403, { ok: false, error: "首次登录必须修改密码", mustChangePassword: true });
+            return;
+          }
+
+          if (path === "/stats" && req.method === "GET") {
+            const logs = store.requestLogs;
+            const success = logs.filter((log) => log.status === "success").length;
+            const error = logs.filter((log) => log.status === "error").length;
+            const durations = logs.filter((log) => typeof log.durationMs === "number").map((log) => log.durationMs || 0);
+            const avgDurationMs = durations.length
+              ? Math.round(durations.reduce((sum, item) => sum + item, 0) / durations.length)
+              : 0;
+            const modelCounts = logs.reduce<Record<string, number>>((acc, log) => {
+              acc[log.model] = (acc[log.model] || 0) + 1;
+              return acc;
+            }, {});
+            const errorCounts = logs.filter((log) => log.status === "error").reduce<Record<string, number>>((acc, log) => {
+              const key = log.errorCode || log.errorType || log.errorMessage || "未知错误";
+              acc[key] = (acc[key] || 0) + 1;
+              return acc;
+            }, {});
+            sendJson(res, 200, {
+              ok: true,
+              stats: {
+                total: logs.length,
+                success,
+                error,
+                running: logs.filter((log) => log.status === "running").length,
+                successRate: logs.length ? Math.round((success / logs.length) * 1000) / 10 : 0,
+                avgDurationMs,
+                modelCounts,
+                errorCounts,
+              },
+            });
+            return;
+          }
+
+          if (path === "/requests" && req.method === "GET") {
+            const url = new URL(req.url || "/", "http://localhost");
+            const query = (url.searchParams.get("q") || "").toLowerCase();
+            const status = url.searchParams.get("status") || "";
+            const model = url.searchParams.get("model") || "";
+            const logs = store.requestLogs
+              .filter((log) => !status || log.status === status)
+              .filter((log) => !model || log.model === model)
+              .filter((log) => !query || `${log.requestId} ${log.clientId} ${log.prompt} ${log.model} ${log.errorMessage || ""}`.toLowerCase().includes(query))
+              .slice(0, 300);
+            sendJson(res, 200, { ok: true, logs });
+            return;
+          }
+
+          if (path.startsWith("/requests/") && req.method === "GET") {
+            const requestId = decodeURIComponent(path.replace("/requests/", ""));
+            const log = store.requestLogs.find((record) => record.requestId === requestId);
+            if (!log) {
+              sendJson(res, 404, { ok: false, error: "日志不存在" });
+              return;
+            }
+            sendJson(res, 200, { ok: true, log });
+            return;
+          }
+
+          sendJson(res, 404, { ok: false, error: "Not found" });
+        } catch (error) {
+          sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      });
+
       server.middlewares.use("/api/models", async (req, res) => {
         if (req.method !== "POST") {
           sendJson(res, 405, { ok: false, error: "Method not allowed" });
@@ -540,6 +946,9 @@ function imageProxyPlugin(): PluginOption {
           sendJson(res, 405, { ok: false, error: "Method not allowed" });
           return;
         }
+        const requestId = randomUUID();
+        const startedAt = Date.now();
+        let logCreated = false;
         try {
           const body = await readJsonBody(req);
           const baseUrl = getString(body, "baseUrl");
@@ -547,14 +956,58 @@ function imageProxyPlugin(): PluginOption {
           const request = (body.request && typeof body.request === "object" ? body.request : {}) as GenerateRequest;
           const protocol = getProtocol(request.protocol);
           request.protocol = protocol;
+          const requestMeta = body.request && typeof body.request === "object"
+            ? body.request as Record<string, unknown>
+            : {};
+          const clientId = getString(body, "clientId") || "anonymous";
+
+          createRequestLog({
+            requestId,
+            batchId: typeof requestMeta.batchId === "string" ? requestMeta.batchId : undefined,
+            batchIndex: getNumber(requestMeta.index),
+            batchTotal: getNumber(requestMeta.total),
+            clientId: truncateText(clientId, 120),
+            clientUserAgent: truncateText(req.headers["user-agent"] || "", 500),
+            clientIpHash: hashClientIp(req),
+            protocol,
+            apiBaseUrl: baseUrl.replace(/\/+$/, ""),
+            endpoint: generationEndpointLabel(protocol, request.model),
+            model: truncateText(request.model || "", 240),
+            prompt: truncateText(request.prompt || "", 4000),
+            negativePrompt: request.negativePrompt ? truncateText(request.negativePrompt, 2400) : undefined,
+            aspectRatio: request.aspectRatio,
+            size: request.size,
+            quality: request.quality,
+            outputFormat: request.outputFormat,
+            seed: request.seed,
+            referenceCount: Array.isArray(request.referenceImages) ? request.referenceImages.length : 0,
+            status: "running",
+            createdAt: startedAt,
+            startedAt,
+            imageSaved: false,
+          });
+          logCreated = true;
+
+          const failFast = (status: number, message: string) => {
+            const finishedAt = Date.now();
+            updateRequestLog(requestId, {
+              status: "error",
+              httpStatus: status,
+              errorMessage: message,
+              errorType: "validation_error",
+              finishedAt,
+              durationMs: finishedAt - startedAt,
+            });
+            sendJson(res, status, { ok: false, requestId, detail: { error: message } });
+          };
 
           if (!request.model || !request.prompt) {
-            sendJson(res, 400, { ok: false, detail: { error: "模型和提示词不能为空" } });
+            failFast(400, "模型和提示词不能为空");
             return;
           }
 
           if (!apiKey) {
-            sendJson(res, 400, { ok: false, detail: { error: "API Key 不能为空" } });
+            failFast(400, "API Key 不能为空");
             return;
           }
 
@@ -568,9 +1021,45 @@ function imageProxyPlugin(): PluginOption {
                   ? await generateStability(baseUrl, apiKey, request)
                   : await generateOpenAiCompatible(baseUrl, apiKey, request);
 
-          sendJson(res, result.ok ? 200 : result.status || 500, result);
+          const finishedAt = Date.now();
+          const durationMs = finishedAt - startedAt;
+          if (result.ok) {
+            updateRequestLog(requestId, {
+              status: "success",
+              httpStatus: result.status || 200,
+              finishedAt,
+              durationMs,
+            });
+          } else {
+            const summary = safeErrorSummary(result.detail);
+            updateRequestLog(requestId, {
+              status: "error",
+              httpStatus: result.status || 500,
+              errorMessage: summary.message,
+              errorType: summary.type,
+              errorCode: summary.code,
+              errorRaw: summary.raw,
+              finishedAt,
+              durationMs,
+            });
+          }
+
+          sendJson(res, result.ok ? 200 : result.status || 500, { ...result, requestId });
         } catch (error) {
-          sendJson(res, 500, { ok: false, detail: { error: error instanceof Error ? error.message : String(error) } });
+          const message = error instanceof Error ? error.message : String(error);
+          if (logCreated) {
+            const finishedAt = Date.now();
+            updateRequestLog(requestId, {
+              status: "error",
+              httpStatus: 500,
+              errorMessage: truncateText(message, 800),
+              errorType: "proxy_error",
+              errorRaw: truncateText(message, 2500),
+              finishedAt,
+              durationMs: finishedAt - startedAt,
+            });
+          }
+          sendJson(res, 500, { ok: false, requestId, detail: { error: message } });
         }
       });
     },
@@ -579,4 +1068,14 @@ function imageProxyPlugin(): PluginOption {
 
 export default defineConfig({
   plugins: [react(), imageProxyPlugin()],
+  server: {
+    host: "0.0.0.0",
+    port: 8877,
+    strictPort: true,
+  },
+  preview: {
+    host: "0.0.0.0",
+    port: 8877,
+    strictPort: true,
+  },
 });

@@ -1,5 +1,7 @@
 import {
   AlertCircle,
+  ArrowRight,
+  BarChart3,
   CheckCircle2,
   Clock3,
   Copy,
@@ -7,6 +9,7 @@ import {
   Download,
   ImagePlus,
   Loader2,
+  LogOut,
   Maximize2,
   PanelLeftClose,
   PanelLeftOpen,
@@ -16,6 +19,7 @@ import {
   Search,
   Send,
   Settings2,
+  ShieldCheck,
   Square,
   CheckSquare,
   Trash2,
@@ -36,6 +40,7 @@ import {
   useRef,
   useState,
 } from "react";
+import homeHeroImage from "./assets/home-hero.png";
 
 type ImageProtocol =
   | "custom-openai"
@@ -84,6 +89,7 @@ type ErrorDetail = unknown;
 
 type Job = {
   id: string;
+  requestId?: string;
   batchId: string;
   index: number;
   total: number;
@@ -107,6 +113,7 @@ type Job = {
 
 type StoredHistoryRecord = {
   id: string;
+  requestId?: string;
   batchId?: string;
   index?: number;
   total?: number;
@@ -138,6 +145,7 @@ type ModelLoadState = {
 
 type GenerateProxyResponse = {
   ok: boolean;
+  requestId?: string;
   status?: number;
   images?: Array<{ dataUrl: string; revisedPrompt?: string }>;
   detail?: unknown;
@@ -146,6 +154,7 @@ type GenerateProxyResponse = {
 
 type PreviewItem = {
   id: string;
+  requestId?: string;
   url: string;
   protocol?: ImageProtocol;
   prompt: string;
@@ -160,6 +169,57 @@ type PreviewItem = {
   errorDetail?: ErrorDetail;
 };
 
+type AppPage = "home" | "studio" | "admin";
+
+type AdminUserView = {
+  username: string;
+  mustChangePassword: boolean;
+};
+
+type AdminRequestLog = {
+  requestId: string;
+  batchId?: string;
+  batchIndex?: number;
+  batchTotal?: number;
+  clientId: string;
+  clientUserAgent: string;
+  clientIpHash: string;
+  protocol: ImageProtocol;
+  apiBaseUrl: string;
+  endpoint: string;
+  model: string;
+  prompt: string;
+  negativePrompt?: string;
+  aspectRatio?: string;
+  size?: string;
+  quality?: string;
+  outputFormat?: string;
+  seed?: string;
+  referenceCount: number;
+  status: "running" | "success" | "error";
+  httpStatus?: number;
+  errorMessage?: string;
+  errorType?: string;
+  errorCode?: string;
+  errorRaw?: string;
+  createdAt: number;
+  startedAt?: number;
+  finishedAt?: number;
+  durationMs?: number;
+  imageSaved: false;
+};
+
+type AdminStats = {
+  total: number;
+  success: number;
+  error: number;
+  running: number;
+  successRate: number;
+  avgDurationMs: number;
+  modelCounts: Record<string, number>;
+  errorCounts: Record<string, number>;
+};
+
 const DB_NAME = "codex-image-batch-studio";
 const STORE_NAME = "history";
 const HISTORY_PAGE_SIZE = 20;
@@ -168,7 +228,19 @@ const MAX_REFERENCE_SIZE = 10 * 1024 * 1024;
 const MIN_REFERENCE_EDGE = 128;
 const LARGE_REFERENCE_EDGE = 4096;
 const PROMPT_TEXTAREA_MAX_HEIGHT = 220;
-const DEFAULT_API_URL = "http://64.83.46.3:8317";
+const ALLOWED_API_ENDPOINTS = [
+  {
+    value: "https://www.taijiai.online/",
+    label: "太极 AI",
+    description: "主服务地址",
+  },
+  {
+    value: "https://bobdong.cn/",
+    label: "BobDong",
+    description: "备用服务地址",
+  },
+] as const;
+const DEFAULT_API_URL = ALLOWED_API_ENDPOINTS[0].value;
 const DEFAULT_PROTOCOL: ImageProtocol = "custom-openai";
 const SUPPORTED_REFERENCE_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 
@@ -245,7 +317,7 @@ const PROTOCOLS: Array<{
     label: "OpenAI Images",
     shortLabel: "OpenAI",
     description: "官方 Images API，宽高比会转换为 size 参数",
-    defaultBaseUrl: "https://api.openai.com",
+    defaultBaseUrl: DEFAULT_API_URL,
     defaultModels: ["gpt-image-1"],
     supportedAspectRatios: OPENAI_ASPECT_RATIOS,
     supportsReferenceImages: false,
@@ -258,7 +330,7 @@ const PROTOCOLS: Array<{
     label: "OpenAI Responses",
     shortLabel: "Responses",
     description: "适合对话式生成和后续多轮改图",
-    defaultBaseUrl: "https://api.openai.com",
+    defaultBaseUrl: DEFAULT_API_URL,
     defaultModels: ["gpt-4.1", "gpt-4.1-mini"],
     supportedAspectRatios: OPENAI_ASPECT_RATIOS,
     supportsReferenceImages: false,
@@ -271,7 +343,7 @@ const PROTOCOLS: Array<{
     label: "Gemini Native",
     shortLabel: "Gemini",
     description: "Google Gemini 原生 generateContent 生图/改图",
-    defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta",
+    defaultBaseUrl: DEFAULT_API_URL,
     defaultModels: ["gemini-2.5-flash-image", "gemini-2.0-flash-preview-image-generation"],
     supportedAspectRatios: ALL_ASPECT_RATIOS,
     supportsReferenceImages: true,
@@ -284,7 +356,7 @@ const PROTOCOLS: Array<{
     label: "Gemini OpenAI 兼容",
     shortLabel: "Gemini 兼容",
     description: "Gemini 的 OpenAI 兼容接口，适合快速迁移",
-    defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    defaultBaseUrl: DEFAULT_API_URL,
     defaultModels: ["gemini-2.5-flash-image"],
     supportedAspectRatios: OPENAI_ASPECT_RATIOS,
     supportsReferenceImages: false,
@@ -297,7 +369,7 @@ const PROTOCOLS: Array<{
     label: "Google Imagen",
     shortLabel: "Imagen",
     description: "Imagen 系列文生图，比例范围较明确",
-    defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta",
+    defaultBaseUrl: DEFAULT_API_URL,
     defaultModels: ["imagen-4.0-generate-001", "imagen-4.0-ultra-generate-001", "imagen-3.0-generate-002"],
     supportedAspectRatios: IMAGEN_ASPECT_RATIOS,
     supportsReferenceImages: false,
@@ -310,7 +382,7 @@ const PROTOCOLS: Array<{
     label: "Stability Core",
     shortLabel: "Stability",
     description: "Stability AI Stable Image Core/Ultra 风格接口",
-    defaultBaseUrl: "https://api.stability.ai",
+    defaultBaseUrl: DEFAULT_API_URL,
     defaultModels: ["stable-image-core"],
     supportedAspectRatios: STABILITY_ASPECT_RATIOS,
     supportsReferenceImages: false,
@@ -363,6 +435,21 @@ function uid() {
   return crypto.randomUUID();
 }
 
+function getClientId() {
+  const storageKey = "imageStudioClientId";
+  const existing = localStorage.getItem(storageKey);
+  if (existing) return existing;
+  const next = uid();
+  localStorage.setItem(storageKey, next);
+  return next;
+}
+
+function pageFromHash(): AppPage {
+  if (window.location.hash === "#studio") return "studio";
+  if (window.location.hash.startsWith("#admin")) return "admin";
+  return "home";
+}
+
 function clampNumber(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
@@ -393,6 +480,11 @@ function formatFileDate(value = Date.now()) {
 function formatBytes(value: number) {
   if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function formatCompactDuration(ms = 0) {
+  if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`;
+  return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
 }
 
 function normalizeImageType(file: File) {
@@ -440,6 +532,12 @@ function getProtocolDefinition(protocol: ImageProtocol) {
 
 function isImageProtocol(value: string | null): value is ImageProtocol {
   return PROTOCOLS.some((protocol) => protocol.value === value);
+}
+
+function normalizeApiBaseUrl(value: string | null | undefined) {
+  const normalized = String(value || "").trim().replace(/\/+$/, "");
+  const matched = ALLOWED_API_ENDPOINTS.find((endpoint) => endpoint.value.replace(/\/+$/, "") === normalized);
+  return matched?.value || DEFAULT_API_URL;
 }
 
 function getAspectDefinition(value: string) {
@@ -545,6 +643,7 @@ type PendingQueueItem = {
 function historyRecordToJob(record: HistoryRecord): Job {
   return {
     id: record.id,
+    requestId: record.requestId,
     batchId: record.batchId || record.id,
     index: record.index || 1,
     total: record.total || 1,
@@ -990,10 +1089,9 @@ function loadInitialApiConfig(): ApiConfig {
   const rememberKey = localStorage.getItem("imageStudioRememberKey") === "true";
   const storedProtocol = localStorage.getItem("imageStudioProtocol");
   const protocol = isImageProtocol(storedProtocol) ? storedProtocol : DEFAULT_PROTOCOL;
-  const definition = getProtocolDefinition(protocol);
   return {
     protocol,
-    baseUrl: localStorage.getItem("imageStudioBaseUrl") || definition.defaultBaseUrl,
+    baseUrl: normalizeApiBaseUrl(localStorage.getItem("imageStudioBaseUrl")),
     apiKey: rememberKey
       ? localStorage.getItem("imageStudioApiKey") || ""
       : sessionStorage.getItem("imageStudioApiKey") || "",
@@ -1042,12 +1140,34 @@ function loadInitialParams(): ImageParams {
   }
 }
 
+function isAllowedImageModel(model: string) {
+  const normalized = model.toLowerCase();
+  return normalized === "gpt-image-2" || normalized === "gpt-5.4-image-2" || normalized.includes("image-2");
+}
+
+function imageModelPriority(model: string) {
+  const normalized = model.toLowerCase();
+  if (normalized === "gpt-image-2") return 0;
+  if (normalized === "gpt-5.4-image-2") return 1;
+  return 2;
+}
+
+function filterAllowedImageModels(models: string[]) {
+  return [...new Set(models)]
+    .filter(isAllowedImageModel)
+    .sort((a, b) => {
+      const priority = imageModelPriority(a) - imageModelPriority(b);
+      return priority || a.localeCompare(b);
+    });
+}
+
 function preferModel(models: string[], current: string) {
-  if (current && models.includes(current)) return current;
+  const allowedModels = filterAllowedImageModels(models);
+  if (current && allowedModels.includes(current) && isAllowedImageModel(current)) return current;
   return (
-    models.find((model) => model.toLowerCase().includes("gpt-image")) ||
-    models.find((model) => model.toLowerCase().includes("image")) ||
-    models[0] ||
+    allowedModels.find((model) => model.toLowerCase() === "gpt-image-2") ||
+    allowedModels.find((model) => model.toLowerCase() === "gpt-5.4-image-2") ||
+    allowedModels[0] ||
     ""
   );
 }
@@ -1082,9 +1202,13 @@ export default function App() {
   const [apiConfig, setApiConfig] = useState<ApiConfig>(loadInitialApiConfig);
   const [params, setParams] = useState<ImageParams>(loadInitialParams);
   const [prompt, setPrompt] = useState("");
+  const [activePage, setActivePage] = useState<AppPage>(pageFromHash);
   const [referenceImages, setReferenceImages] = useState<UploadedReference[]>([]);
   const [models, setModels] = useState<string[]>([]);
-  const [selectedModel, setSelectedModel] = useState(localStorage.getItem("imageStudioSelectedModel") || "");
+  const [selectedModel, setSelectedModel] = useState(() => {
+    const storedModel = localStorage.getItem("imageStudioSelectedModel") || "";
+    return isAllowedImageModel(storedModel) ? storedModel : "";
+  });
   const [modelFilter, setModelFilter] = useState("");
   const [modelState, setModelState] = useState<ModelLoadState>({
     status: "idle",
@@ -1108,6 +1232,11 @@ export default function App() {
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedRecordIds, setSelectedRecordIds] = useState<Set<string>>(() => new Set());
   const [pendingDeleteIds, setPendingDeleteIds] = useState<string[] | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(() =>
+    localStorage.getItem("imageStudioOnboardingComplete") !== "true",
+  );
+  const [onboardingStep, setOnboardingStep] = useState(0);
+  const [isAutoLoadingModels, setIsAutoLoadingModels] = useState(false);
   const [isBulkDownloading, setIsBulkDownloading] = useState(false);
   const [isSendLaunching, setIsSendLaunching] = useState(false);
   const [now, setNow] = useState(Date.now());
@@ -1130,6 +1259,8 @@ export default function App() {
   const startIntentRef = useRef(0);
   const sendLaunchFrameRef = useRef<number | undefined>(undefined);
   const sendLaunchTimerRef = useRef<number | undefined>(undefined);
+  const modelLoadRequestRef = useRef(0);
+  const lastAutoModelLoadKeyRef = useRef("");
   const starterDrag = useDragScroll<HTMLDivElement>();
   const protocolDefinition = getProtocolDefinition(apiConfig.protocol);
   const selectedAspectRatio = getAspectDefinition(params.aspectRatio);
@@ -1138,7 +1269,10 @@ export default function App() {
 
   const filteredModels = useMemo(() => {
     const query = modelFilter.trim().toLowerCase();
-    return models.filter((model) => model.toLowerCase().includes(query)).slice(0, 80);
+    return models
+      .filter(isAllowedImageModel)
+      .filter((model) => model.toLowerCase().includes(query))
+      .slice(0, 80);
   }, [modelFilter, models]);
 
   const visibleStats = useMemo(() => {
@@ -1170,6 +1304,7 @@ export default function App() {
   const canGenerate =
     prompt.trim().length > 0 &&
     selectedModel.length > 0 &&
+    isAllowedImageModel(selectedModel) &&
     models.includes(selectedModel) &&
     modelState.status === "ready" &&
     aspectRatioSupported;
@@ -1180,13 +1315,29 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const onHashChange = () => {
+      setActivePage(pageFromHash());
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  useEffect(() => {
+    if (activePage !== "studio" || !showOnboarding) return;
+    setIsSettingsOpen(true);
+    if (onboardingStep < 2) {
+      setIsLeftSidebarOpen(false);
+    }
+  }, [activePage, showOnboarding, onboardingStep]);
+
+  useEffect(() => {
     paramsRef.current = params;
     pumpQueue();
   }, [params]);
 
   useEffect(() => {
     localStorage.setItem("imageStudioProtocol", apiConfig.protocol);
-    localStorage.setItem("imageStudioBaseUrl", apiConfig.baseUrl);
+    localStorage.setItem("imageStudioBaseUrl", normalizeApiBaseUrl(apiConfig.baseUrl));
     localStorage.setItem("imageStudioRememberKey", String(apiConfig.rememberKey));
     sessionStorage.setItem("imageStudioApiKey", apiConfig.apiKey);
     if (apiConfig.rememberKey) {
@@ -1238,6 +1389,30 @@ export default function App() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (activePage !== "studio") return;
+    const apiKey = apiConfig.apiKey.trim();
+    if (apiKey.length < 8) return;
+    const normalizedBaseUrl = normalizeApiBaseUrl(apiConfig.baseUrl);
+    const autoLoadKey = `${apiConfig.protocol}|${normalizedBaseUrl}|${apiKey}`;
+    if (lastAutoModelLoadKeyRef.current === autoLoadKey) return;
+
+    const timer = window.setTimeout(() => {
+      if (lastAutoModelLoadKeyRef.current === autoLoadKey) return;
+      lastAutoModelLoadKeyRef.current = autoLoadKey;
+      void loadModels({
+        silent: true,
+        config: {
+          ...apiConfig,
+          baseUrl: normalizedBaseUrl,
+          apiKey,
+        },
+      });
+    }, 1000);
+
+    return () => window.clearTimeout(timer);
+  }, [activePage, apiConfig.apiKey, apiConfig.baseUrl, apiConfig.protocol]);
 
   useEffect(() => {
     const marker = mainLoadMoreRef.current;
@@ -1522,33 +1697,65 @@ export default function App() {
     void handleFiles(event.dataTransfer.files);
   }
 
-  async function loadModels() {
-    setModelState({ status: "loading", message: "读取中" });
+  async function loadModels({
+    silent = false,
+    config = apiConfig,
+  }: {
+    silent?: boolean;
+    config?: ApiConfig;
+  } = {}) {
+    const normalizedBaseUrl = normalizeApiBaseUrl(config.baseUrl);
+    const modelLoadKey = `${config.protocol}|${normalizedBaseUrl}|${config.apiKey.trim()}`;
+    const requestId = modelLoadRequestRef.current + 1;
+    modelLoadRequestRef.current = requestId;
+    if (silent) {
+      setIsAutoLoadingModels(true);
+    } else {
+      lastAutoModelLoadKeyRef.current = modelLoadKey;
+      setIsAutoLoadingModels(false);
+      setModelState({ status: "loading", message: "读取中" });
+    }
     try {
       const response = await fetch("/api/models", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          protocol: apiConfig.protocol,
-          baseUrl: apiConfig.baseUrl,
-          apiKey: apiConfig.apiKey,
+          protocol: config.protocol,
+          baseUrl: normalizedBaseUrl,
+          apiKey: config.apiKey,
         }),
       });
       const payload = await response.json();
       if (!response.ok || !payload.ok) {
         throw payload.detail || payload;
       }
-      const nextModels = Array.isArray(payload.models) ? payload.models : [];
-      if (nextModels.length === 0) {
+      if (requestId !== modelLoadRequestRef.current) return;
+      const upstreamModels = Array.isArray(payload.models) ? payload.models : [];
+      if (upstreamModels.length === 0) {
         throw new Error("接口返回了空模型列表");
       }
+      const nextModels = filterAllowedImageModels(upstreamModels);
+      if (nextModels.length === 0) {
+        throw new Error("未找到可用的 image-2 模型");
+      }
+      const nextSelectedModel = preferModel(nextModels, selectedModel);
+      lastAutoModelLoadKeyRef.current = modelLoadKey;
       setModels(nextModels);
-      setSelectedModel((current) => preferModel(nextModels, current));
-      setModelState({ status: "ready", message: `${nextModels.length} 个模型` });
+      setSelectedModel(nextSelectedModel);
+      setModelFilter("");
+      setModelState({ status: "ready", message: `${nextModels.length} 个 image-2 模型` });
+      if (silent && showOnboarding && onboardingStep < 2) {
+        setOnboardingStep(2);
+      }
     } catch (error) {
+      if (requestId !== modelLoadRequestRef.current || silent) return;
       setModels([]);
       setSelectedModel("");
       setModelState({ status: "error", message: formatError(error) });
+    } finally {
+      if (silent) {
+        setIsAutoLoadingModels(false);
+      }
     }
   }
 
@@ -1563,7 +1770,11 @@ export default function App() {
         body: JSON.stringify({
           baseUrl: config.baseUrl,
           apiKey: config.apiKey,
+          clientId: getClientId(),
           request: {
+            batchId: job.batchId,
+            index: job.index,
+            total: job.total,
             protocol: job.protocol,
             model: job.model,
             prompt: job.prompt,
@@ -1579,7 +1790,9 @@ export default function App() {
       });
       const payload = (await response.json()) as GenerateProxyResponse;
       if (!response.ok || !payload.ok || !payload.images?.[0]?.dataUrl) {
-        throw payload.detail || payload;
+        throw payload.detail && typeof payload.detail === "object"
+          ? { ...payload.detail as Record<string, unknown>, requestId: payload.requestId }
+          : { error: payload.detail || payload, requestId: payload.requestId };
       }
 
       const dataUrl = payload.images[0].dataUrl;
@@ -1591,6 +1804,7 @@ export default function App() {
       const revisedPrompt = payload.images[0].revisedPrompt || "";
 
       patchVisibleRecord(job.id, {
+        requestId: payload.requestId,
         status: "success",
         imageBlob: blob,
         imageUrl: objectUrl,
@@ -1604,6 +1818,7 @@ export default function App() {
 
       const historyRecord: StoredHistoryRecord = {
         id: job.id,
+        requestId: payload.requestId,
         batchId: job.batchId,
         index: job.index,
         total: job.total,
@@ -1628,9 +1843,13 @@ export default function App() {
       const finishedAt = Date.now();
       const durationMs = finishedAt - startedAt;
       const errorDetail = error instanceof Error ? { error: error.message } : error;
-      patchVisibleRecord(job.id, { status: "error", errorDetail, startedAt, finishedAt, durationMs });
+      const requestId = errorDetail && typeof errorDetail === "object" && "requestId" in errorDetail
+        ? String((errorDetail as { requestId?: unknown }).requestId || "")
+        : undefined;
+      patchVisibleRecord(job.id, { requestId, status: "error", errorDetail, startedAt, finishedAt, durationMs });
       const historyRecord: StoredHistoryRecord = {
         id: job.id,
+        requestId,
         batchId: job.batchId,
         index: job.index,
         total: job.total,
@@ -1658,6 +1877,7 @@ export default function App() {
     const concurrency = clampNumber(Number(params.concurrency), 1, 6);
     const batchId = uid();
     const batchCreatedAt = Date.now();
+    const submittedPrompt = prompt.trim();
     const snapshotConfig = { ...apiConfig };
     const snapshotParams = {
       ...params,
@@ -1674,7 +1894,7 @@ export default function App() {
         total,
         batchId,
         apiConfig.protocol,
-        prompt.trim(),
+        submittedPrompt,
         selectedModel,
         snapshotParams,
         snapshotReferenceImages,
@@ -1684,6 +1904,9 @@ export default function App() {
     setHighlightedRecordId("");
     setVisibleRecords((current) => sortGenerationRecords([...nextJobs, ...current]));
     enqueueJobs(nextJobs, snapshotConfig);
+    window.setTimeout(() => {
+      setPrompt((current) => (current.trim() === submittedPrompt ? "" : current));
+    }, 760);
   }
 
   function requestStartBatch() {
@@ -1785,21 +2008,22 @@ export default function App() {
 
   function changeProtocol(protocol: ImageProtocol) {
     const nextDefinition = getProtocolDefinition(protocol);
+    const nextModels = filterAllowedImageModels(nextDefinition.defaultModels);
     setApiConfig((current) => {
-      const currentDefinition = getProtocolDefinition(current.protocol);
-      const knownDefaultUrl = PROTOCOLS.some((item) => item.defaultBaseUrl === current.baseUrl);
       return {
         ...current,
         protocol,
-        baseUrl: !current.baseUrl || current.baseUrl === currentDefinition.defaultBaseUrl || knownDefaultUrl
-          ? nextDefinition.defaultBaseUrl
-          : current.baseUrl,
+        baseUrl: normalizeApiBaseUrl(current.baseUrl),
       };
     });
-    setModels(nextDefinition.defaultModels);
-    setSelectedModel((current) => preferModel(nextDefinition.defaultModels, current));
+    setModels(nextModels);
+    setSelectedModel((current) => preferModel(nextModels, current));
     setModelFilter("");
-    setModelState({ status: "ready", message: `${nextDefinition.defaultModels.length} 个预设模型` });
+    setModelState(
+      nextModels.length > 0
+        ? { status: "ready", message: `${nextModels.length} 个预设 image-2 模型` }
+        : { status: "idle", message: "等待读取 image-2 模型" },
+    );
   }
 
   function downloadCurrent(job: Job | HistoryRecord) {
@@ -1831,6 +2055,7 @@ export default function App() {
     if (!url) return;
     setPreviewItem({
       id: item.id,
+      requestId: item.requestId,
       url,
       protocol: (item as Job).protocol || (item as HistoryRecord).protocol,
       prompt: item.prompt,
@@ -1844,6 +2069,45 @@ export default function App() {
       durationMs: item.durationMs,
       errorDetail: item.errorDetail,
     });
+  }
+
+  function enterStudio() {
+    setActivePage("studio");
+    if (window.location.hash !== "#studio") {
+      window.history.pushState(null, "", "#studio");
+    }
+    if (showOnboarding) {
+      setOnboardingStep(0);
+      setIsSettingsOpen(true);
+    }
+  }
+
+  function enterAdmin() {
+    setActivePage("admin");
+    if (window.location.hash !== "#admin") {
+      window.history.pushState(null, "", "#admin");
+    }
+  }
+
+  function returnHome() {
+    setActivePage("home");
+    if (window.location.hash) {
+      window.history.pushState(null, "", window.location.pathname);
+    }
+  }
+
+  function completeOnboarding() {
+    localStorage.setItem("imageStudioOnboardingComplete", "true");
+    setShowOnboarding(false);
+    setOnboardingStep(0);
+  }
+
+  if (activePage === "home") {
+    return <HomePage onEnter={enterStudio} onAdmin={enterAdmin} />;
+  }
+
+  if (activePage === "admin") {
+    return <AdminApp onBackHome={returnHome} onEnterStudio={enterStudio} />;
   }
 
   return (
@@ -1940,6 +2204,10 @@ export default function App() {
               title={isLeftSidebarOpen ? "收起最近记录" : "打开最近记录"}
               onClick={() => setIsLeftSidebarOpen((value) => !value)}
             />
+            <button type="button" className="topbar-home-button" onClick={returnHome}>
+              <WandSparkles size={15} />
+              首页
+            </button>
             <div className={`status-pill ${modelState.status}`}>
               {modelState.status === "ready" ? <Wifi size={16} /> : <Settings2 size={16} />}
               <span>{modelState.status === "ready" ? "已连接" : modelState.message}</span>
@@ -2035,6 +2303,7 @@ export default function App() {
 
         <form
           className="composer"
+          data-onboarding-target="composer"
           onSubmit={(event) => {
             event.preventDefault();
             requestStartBatch();
@@ -2158,7 +2427,7 @@ export default function App() {
           </button>
         </div>
 
-        <section className="settings-section">
+        <section className="settings-section" data-onboarding-target="api">
           <label>
             <span>生图协议</span>
             <select
@@ -2179,12 +2448,20 @@ export default function App() {
           </div>
           <label>
             <span>API URL</span>
-            <input
+            <select
               value={apiConfig.baseUrl}
-              onChange={(event) => setApiConfig((current) => ({ ...current, baseUrl: event.target.value }))}
-              spellCheck={false}
-            />
+              onChange={(event) => setApiConfig((current) => ({ ...current, baseUrl: normalizeApiBaseUrl(event.target.value) }))}
+            >
+              {ALLOWED_API_ENDPOINTS.map((endpoint) => (
+                <option key={endpoint.value} value={endpoint.value}>
+                  {endpoint.label} · {endpoint.value}
+                </option>
+              ))}
+            </select>
           </label>
+          <div className="endpoint-note">
+            {ALLOWED_API_ENDPOINTS.find((endpoint) => endpoint.value === apiConfig.baseUrl)?.description || "固定服务地址"}
+          </div>
           <label>
             <span>API Key</span>
             <input
@@ -2204,11 +2481,17 @@ export default function App() {
           </label>
           <button className="primary-action" type="button" onClick={() => void loadModels()} disabled={modelState.status === "loading"}>
             {modelState.status === "loading" ? <Loader2 size={17} className="spin" /> : <RefreshCw size={17} />}
-            读取模型列表
+            读取/刷新模型
           </button>
-          <div className={`status-line ${modelState.status}`}>
-            {modelState.status === "ready" ? <CheckCircle2 size={15} /> : <AlertCircle size={15} />}
-            <span>{modelState.message}</span>
+          <div className={`status-line ${isAutoLoadingModels ? "loading" : modelState.status}`}>
+            {isAutoLoadingModels ? (
+              <Loader2 size={15} className="spin" />
+            ) : modelState.status === "ready" ? (
+              <CheckCircle2 size={15} />
+            ) : (
+              <AlertCircle size={15} />
+            )}
+            <span>{isAutoLoadingModels ? "正在自动读取 image-2 模型..." : modelState.message}</span>
           </div>
           <div className="local-save-note">
             <Database size={15} />
@@ -2216,8 +2499,11 @@ export default function App() {
           </div>
         </section>
 
-        <section className="settings-section">
-          <div className="section-label">模型</div>
+        <section className="settings-section" data-onboarding-target="model">
+          <div className="section-label with-note">
+            <span>可用生图模型</span>
+            <small>仅显示 gpt-image-2、gpt-5.4-image-2 或包含 image-2 的模型</small>
+          </div>
           <div className="search-input">
             <Search size={16} />
             <input
@@ -2228,7 +2514,9 @@ export default function App() {
           </div>
           <div className="model-list">
             {filteredModels.length === 0 ? (
-              <div className="muted-box">无模型</div>
+              <div className="muted-box">
+                {models.length === 0 ? "暂无可用 image-2 模型" : "无匹配模型"}
+              </div>
             ) : (
               filteredModels.map((model) => (
                 <button
@@ -2351,6 +2639,660 @@ export default function App() {
           onConfirm={() => void confirmBulkDelete()}
         />
       )}
+      {showOnboarding && (
+        <OnboardingGuide
+          step={onboardingStep}
+          canGenerate={canGenerate}
+          modelState={modelState}
+          selectedModel={selectedModel}
+          apiKeyReady={apiConfig.apiKey.trim().length > 0}
+          onStepChange={setOnboardingStep}
+          onOpenSettings={() => setIsSettingsOpen(true)}
+          onFinish={completeOnboarding}
+        />
+      )}
+    </div>
+  );
+}
+
+function AdminApp({
+  onBackHome,
+  onEnterStudio,
+}: {
+  onBackHome: () => void;
+  onEnterStudio: () => void;
+}) {
+  const [user, setUser] = useState<AdminUserView | null>(null);
+  const [isChecking, setIsChecking] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [loginForm, setLoginForm] = useState({ username: "admin", password: "" });
+  const [passwordForm, setPasswordForm] = useState({ oldPassword: "", newPassword: "", confirmPassword: "" });
+  const [adminError, setAdminError] = useState("");
+  const [stats, setStats] = useState<AdminStats | null>(null);
+  const [logs, setLogs] = useState<AdminRequestLog[]>([]);
+  const [logStatus, setLogStatus] = useState("");
+  const [logQuery, setLogQuery] = useState("");
+  const [isLoadingLogs, setIsLoadingLogs] = useState(false);
+
+  useEffect(() => {
+    void refreshMe();
+  }, []);
+
+  useEffect(() => {
+    if (!user || user.mustChangePassword) return;
+    void refreshDashboard();
+    const timer = window.setInterval(() => void refreshDashboard({ quiet: true }), 10_000);
+    return () => window.clearInterval(timer);
+  }, [user?.username, user?.mustChangePassword, logStatus, logQuery]);
+
+  async function adminFetch<T>(path: string, init: RequestInit = {}) {
+    const response = await fetch(`/api/admin${path}`, {
+      ...init,
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json",
+        ...(init.headers || {}),
+      },
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) {
+      throw payload;
+    }
+    return payload as T;
+  }
+
+  async function refreshMe() {
+    setIsChecking(true);
+    try {
+      const payload = await adminFetch<{ ok: true; user: AdminUserView }>("/me");
+      setUser(payload.user);
+    } catch {
+      setUser(null);
+    } finally {
+      setIsChecking(false);
+    }
+  }
+
+  async function handleLogin(event: FormEvent) {
+    event.preventDefault();
+    setAdminError("");
+    setIsSubmitting(true);
+    try {
+      const payload = await adminFetch<{ ok: true; user: AdminUserView }>("/login", {
+        method: "POST",
+        body: JSON.stringify(loginForm),
+      });
+      setUser(payload.user);
+      setPasswordForm((current) => ({ ...current, oldPassword: loginForm.password }));
+    } catch (error) {
+      setAdminError(formatError(error));
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handlePasswordChange(event: FormEvent) {
+    event.preventDefault();
+    setAdminError("");
+    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+      setAdminError("两次输入的新密码不一致");
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      await adminFetch<{ ok: true }>("/change-password", {
+        method: "POST",
+        body: JSON.stringify({
+          oldPassword: passwordForm.oldPassword,
+          newPassword: passwordForm.newPassword,
+        }),
+      });
+      setPasswordForm({ oldPassword: "", newPassword: "", confirmPassword: "" });
+      setUser((current) => current ? { ...current, mustChangePassword: false } : current);
+    } catch (error) {
+      setAdminError(formatError(error));
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function refreshDashboard(options: { quiet?: boolean } = {}) {
+    if (!options.quiet) setIsLoadingLogs(true);
+    try {
+      const query = new URLSearchParams();
+      if (logStatus) query.set("status", logStatus);
+      if (logQuery.trim()) query.set("q", logQuery.trim());
+      const [statsPayload, logsPayload] = await Promise.all([
+        adminFetch<{ ok: true; stats: AdminStats }>("/stats"),
+        adminFetch<{ ok: true; logs: AdminRequestLog[] }>(`/requests?${query.toString()}`),
+      ]);
+      setStats(statsPayload.stats);
+      setLogs(logsPayload.logs);
+    } catch (error) {
+      setAdminError(formatError(error));
+      if ((error as { mustChangePassword?: boolean })?.mustChangePassword) {
+        setUser((current) => current ? { ...current, mustChangePassword: true } : current);
+      }
+    } finally {
+      if (!options.quiet) setIsLoadingLogs(false);
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await adminFetch<{ ok: true }>("/logout", { method: "POST", body: "{}" });
+    } finally {
+      setUser(null);
+      setStats(null);
+      setLogs([]);
+      setAdminError("");
+    }
+  }
+
+  const topModels = useMemo(
+    () => Object.entries(stats?.modelCounts || {}).sort((a, b) => b[1] - a[1]).slice(0, 5),
+    [stats],
+  );
+  const topErrors = useMemo(
+    () => Object.entries(stats?.errorCounts || {}).sort((a, b) => b[1] - a[1]).slice(0, 4),
+    [stats],
+  );
+
+  if (isChecking) {
+    return (
+      <main className="admin-page">
+        <div className="admin-checking">
+          <Loader2 className="spin" size={22} />
+          <span>正在检查管理员登录状态...</span>
+        </div>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main className="admin-page">
+        <section className="admin-auth-panel">
+          <div className="admin-auth-hero">
+            <span className="admin-badge"><ShieldCheck size={16} /> Admin Console</span>
+            <h1>请求日志与服务健康后台</h1>
+            <p>查看所有用户的生成请求、成功率、耗时和失败原因。后台不会记录 API Key，也不会保存生成图片。</p>
+            <div className="admin-auth-actions">
+              <button type="button" className="subtle-button" onClick={onBackHome}>返回首页</button>
+              <button type="button" className="subtle-button" onClick={onEnterStudio}>打开工作台</button>
+            </div>
+          </div>
+          <form className="admin-login-card" onSubmit={handleLogin}>
+            <strong>管理员登录</strong>
+            <span>首次登录默认账号需要立即重置密码</span>
+            <label>
+              <span>用户名</span>
+              <input
+                value={loginForm.username}
+                onChange={(event) => setLoginForm((current) => ({ ...current, username: event.target.value }))}
+                autoComplete="username"
+              />
+            </label>
+            <label>
+              <span>密码</span>
+              <input
+                type="password"
+                value={loginForm.password}
+                onChange={(event) => setLoginForm((current) => ({ ...current, password: event.target.value }))}
+                autoComplete="current-password"
+                placeholder="默认 admin123456"
+              />
+            </label>
+            {adminError && <div className="admin-error">{adminError}</div>}
+            <button className="primary-action" type="submit" disabled={isSubmitting}>
+              {isSubmitting ? <Loader2 size={17} className="spin" /> : <ShieldCheck size={17} />}
+              登录
+            </button>
+          </form>
+        </section>
+      </main>
+    );
+  }
+
+  if (user.mustChangePassword) {
+    return (
+      <main className="admin-page">
+        <section className="admin-reset-panel">
+          <div>
+            <span className="admin-badge"><ShieldCheck size={16} /> First Login</span>
+            <h1>首次登录需要重置管理员密码</h1>
+            <p>新密码至少 8 位，并包含字母和数字。完成后会进入日志后台。</p>
+          </div>
+          <form className="admin-login-card" onSubmit={handlePasswordChange}>
+            <strong>重置密码</strong>
+            <label>
+              <span>当前密码</span>
+              <input
+                type="password"
+                value={passwordForm.oldPassword}
+                onChange={(event) => setPasswordForm((current) => ({ ...current, oldPassword: event.target.value }))}
+                autoComplete="current-password"
+              />
+            </label>
+            <label>
+              <span>新密码</span>
+              <input
+                type="password"
+                value={passwordForm.newPassword}
+                onChange={(event) => setPasswordForm((current) => ({ ...current, newPassword: event.target.value }))}
+                autoComplete="new-password"
+              />
+            </label>
+            <label>
+              <span>确认新密码</span>
+              <input
+                type="password"
+                value={passwordForm.confirmPassword}
+                onChange={(event) => setPasswordForm((current) => ({ ...current, confirmPassword: event.target.value }))}
+                autoComplete="new-password"
+              />
+            </label>
+            {adminError && <div className="admin-error">{adminError}</div>}
+            <button className="primary-action" type="submit" disabled={isSubmitting}>
+              {isSubmitting ? <Loader2 size={17} className="spin" /> : <ShieldCheck size={17} />}
+              保存新密码
+            </button>
+          </form>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="admin-page">
+      <header className="admin-topbar">
+        <div>
+          <span className="admin-badge"><ShieldCheck size={16} /> Image Studio Admin</span>
+          <h1>请求日志后台</h1>
+        </div>
+        <div className="admin-topbar-actions">
+          <button type="button" className="subtle-button" onClick={onEnterStudio}>工作台</button>
+          <button type="button" className="subtle-button" onClick={() => void refreshDashboard()}>
+            <RefreshCw size={16} />
+            刷新
+          </button>
+          <button type="button" className="subtle-button" onClick={() => void handleLogout()}>
+            <LogOut size={16} />
+            退出
+          </button>
+        </div>
+      </header>
+
+      <section className="admin-stat-grid">
+        <AdminStatCard label="总请求" value={stats?.total ?? 0} />
+        <AdminStatCard label="成功率" value={`${stats?.successRate ?? 0}%`} tone="success" />
+        <AdminStatCard label="失败" value={stats?.error ?? 0} tone="error" />
+        <AdminStatCard label="平均耗时" value={formatCompactDuration(stats?.avgDurationMs ?? 0)} />
+      </section>
+
+      <section className="admin-insight-grid">
+        <article className="admin-panel">
+          <div className="admin-panel-title">
+            <BarChart3 size={17} />
+            <strong>模型分布</strong>
+          </div>
+          {topModels.length === 0 ? (
+            <p className="admin-muted">暂无模型请求</p>
+          ) : (
+            topModels.map(([model, count]) => (
+              <div className="admin-rank-row" key={model}>
+                <span title={model}>{model}</span>
+                <strong>{count}</strong>
+              </div>
+            ))
+          )}
+        </article>
+        <article className="admin-panel">
+          <div className="admin-panel-title">
+            <AlertCircle size={17} />
+            <strong>常见失败</strong>
+          </div>
+          {topErrors.length === 0 ? (
+            <p className="admin-muted">暂无失败记录</p>
+          ) : (
+            topErrors.map(([error, count]) => (
+              <div className="admin-rank-row" key={error}>
+                <span title={error}>{error}</span>
+                <strong>{count}</strong>
+              </div>
+            ))
+          )}
+        </article>
+      </section>
+
+      <section className="admin-panel admin-log-panel">
+        <div className="admin-log-toolbar">
+          <div>
+            <strong>请求记录</strong>
+            <span>只记录 requestID、提示词、模型、参数、状态与错误信息</span>
+          </div>
+          <div className="admin-filter-row">
+            <select value={logStatus} onChange={(event) => setLogStatus(event.target.value)}>
+              <option value="">全部状态</option>
+              <option value="running">运行中</option>
+              <option value="success">成功</option>
+              <option value="error">失败</option>
+            </select>
+            <input
+              value={logQuery}
+              onChange={(event) => setLogQuery(event.target.value)}
+              placeholder="搜索 requestID / 提示词 / 模型"
+            />
+          </div>
+        </div>
+        {adminError && <div className="admin-error">{adminError}</div>}
+        <div className="admin-table-wrap">
+          <table className="admin-table">
+            <thead>
+              <tr>
+                <th>状态</th>
+                <th>Request ID</th>
+                <th>提示词</th>
+                <th>模型</th>
+                <th>参数</th>
+                <th>耗时</th>
+                <th>时间</th>
+                <th>错误</th>
+              </tr>
+            </thead>
+            <tbody>
+              {logs.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="admin-empty-cell">
+                    {isLoadingLogs ? "正在读取日志..." : "暂无请求记录"}
+                  </td>
+                </tr>
+              ) : (
+                logs.map((log) => (
+                  <tr key={log.requestId}>
+                    <td><span className={`admin-status ${log.status}`}>{log.status}</span></td>
+                    <td><code title={log.requestId}>{log.requestId.slice(0, 8)}</code></td>
+                    <td className="admin-prompt-cell" title={log.prompt}>{log.prompt || "-"}</td>
+                    <td className="admin-model-cell" title={log.model}>{log.model || "-"}</td>
+                    <td>{[log.aspectRatio, log.size, log.outputFormat, log.referenceCount ? `${log.referenceCount} 图` : ""].filter(Boolean).join(" · ") || "-"}</td>
+                    <td>{formatCompactDuration(log.durationMs || 0)}</td>
+                    <td>{formatFullDate(log.createdAt)}</td>
+                    <td className="admin-error-cell" title={log.errorRaw || log.errorMessage || ""}>{log.errorMessage || "-"}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function AdminStatCard({
+  label,
+  value,
+  tone = "neutral",
+}: {
+  label: string;
+  value: string | number;
+  tone?: "neutral" | "success" | "error";
+}) {
+  return (
+    <article className={`admin-stat-card ${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </article>
+  );
+}
+
+function HomePage({ onEnter, onAdmin }: { onEnter: () => void; onAdmin: () => void }) {
+  const featureBands = [
+    {
+      title: "批量生成，不打断思路",
+      body: "提示词提交后立即进入队列，成功、失败、耗时和尺寸会沉到本地记录里，适合连续探索一组视觉方向。",
+    },
+    {
+      title: "只走指定服务地址",
+      body: "前端只允许在太极 AI 与 BobDong 两个服务地址之间选择，避免临时填错请求入口。",
+    },
+    {
+      title: "浏览器本地历史",
+      body: "图片 Blob、提示词、模型、宽高比和错误详情写入 IndexedDB，服务器不保存生成结果。",
+    },
+  ];
+
+  return (
+    <main className="home-page">
+      <section
+        className="home-hero"
+        style={{
+          backgroundImage: `linear-gradient(90deg, rgba(247, 247, 245, 0.96) 0%, rgba(247, 247, 245, 0.84) 34%, rgba(247, 247, 245, 0.1) 72%), url(${homeHeroImage})`,
+        }}
+      >
+        <nav className="home-nav">
+          <div className="home-brand">
+            <span>
+              <WandSparkles size={19} />
+            </span>
+            <strong>Image Studio</strong>
+          </div>
+          <button type="button" className="home-nav-action" onClick={onEnter}>
+            打开工作台
+          </button>
+          <button type="button" className="home-admin-link" onClick={onAdmin}>
+            <ShieldCheck size={16} />
+            管理后台
+          </button>
+        </nav>
+
+        <div className="home-hero-copy">
+          <span className="home-kicker">Local-first batch image generation</span>
+          <h1>Image Studio</h1>
+          <p>
+            一个面向创作者的本地批量生图工作台，把模型选择、参考图、宽高比、并发队列和历史图片收进同一个安静而快速的界面。
+          </p>
+          <div className="home-hero-actions">
+            <button type="button" className="home-primary" onClick={onEnter}>
+              开始生成
+              <ArrowRight size={18} />
+            </button>
+            <a className="home-secondary" href="#home-flow">
+              了解流程
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <section className="home-flow" id="home-flow">
+        <div className="home-section-copy">
+          <span className="home-kicker">How it works</span>
+          <h2>从提示词到图库，保持一条清晰的线。</h2>
+        </div>
+        <div className="home-feature-grid">
+          {featureBands.map((feature) => (
+            <article className="home-feature" key={feature.title}>
+              <strong>{feature.title}</strong>
+              <p>{feature.body}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="home-insight">
+        <div>
+          <span className="home-kicker">Designed for iteration</span>
+          <h2>每一次提交都会成为可回看的素材资产。</h2>
+        </div>
+        <p>
+          工作台默认展示所有本地生成记录，失败也会保留完整错误内容，方便你判断是提示词、模型、网络还是服务端响应出了问题。
+        </p>
+        <button type="button" className="home-primary dark" onClick={onEnter}>
+          进入使用界面
+          <ArrowRight size={18} />
+        </button>
+      </section>
+    </main>
+  );
+}
+
+function OnboardingGuide({
+  step,
+  canGenerate,
+  modelState,
+  selectedModel,
+  apiKeyReady,
+  onStepChange,
+  onOpenSettings,
+  onFinish,
+}: {
+  step: number;
+  canGenerate: boolean;
+  modelState: ModelLoadState;
+  selectedModel: string;
+  apiKeyReady: boolean;
+  onStepChange: (step: number) => void;
+  onOpenSettings: () => void;
+  onFinish: () => void;
+}) {
+  const steps = [
+    {
+      target: "api",
+      title: "连接你的生图服务",
+      body: "先在右侧配置里选择服务地址并填入 API Key。地址已被限制为两个固定入口，避免请求落到未知服务。",
+      status: apiKeyReady ? "API Key 已填写" : "等待填写 API Key",
+    },
+    {
+      target: "model",
+      title: "读取并选择模型",
+      body: "点击读取模型列表，只能从接口返回的模型中选择。模型就绪后，顶部会显示已连接状态。",
+      status: modelState.status === "ready" && selectedModel ? `已选择 ${selectedModel}` : modelState.message,
+    },
+    {
+      target: "composer",
+      title: "输入提示词并生成",
+      body: "回到底部输入框描述画面，选择宽高比、张数和并发。提交后提示词会在发送动画完成后自动清空。",
+      status: canGenerate ? "现在可以提交生成" : "等待提示词、模型和比例就绪",
+    },
+  ];
+  const current = steps[step] || steps[0];
+  const last = step >= steps.length - 1;
+  const [spotlightStyle, setSpotlightStyle] = useState<CSSProperties>({});
+  const [panelStyle, setPanelStyle] = useState<CSSProperties>({});
+
+  useLayoutEffect(() => {
+    let raf = 0;
+    let scrollTimer = 0;
+    const targetSelector = `[data-onboarding-target="${current.target}"]`;
+
+    if (current.target !== "composer") {
+      onOpenSettings();
+    }
+
+    const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+    const measure = () => {
+      const target = document.querySelector<HTMLElement>(targetSelector);
+      if (!target) return;
+      const rect = target.getBoundingClientRect();
+      const padding = 10;
+      const left = clamp(rect.left - padding, 10, window.innerWidth - 40);
+      const top = clamp(rect.top - padding, 10, window.innerHeight - 40);
+      const width = Math.max(44, Math.min(rect.width + padding * 2, window.innerWidth - left - 10));
+      const height = Math.max(44, Math.min(rect.height + padding * 2, window.innerHeight - top - 10));
+      const panelWidth = Math.min(420, window.innerWidth - 28);
+      const panelHeightEstimate = 250;
+      const gap = 18;
+      let panelLeft = 14;
+      let panelTop = 14;
+
+      if (left > panelWidth + gap + 14) {
+        panelLeft = left - panelWidth - gap;
+        panelTop = clamp(top, 14, window.innerHeight - panelHeightEstimate - 14);
+      } else if (left + width + panelWidth + gap < window.innerWidth - 14) {
+        panelLeft = left + width + gap;
+        panelTop = clamp(top, 14, window.innerHeight - panelHeightEstimate - 14);
+      } else if (top > panelHeightEstimate + gap + 14) {
+        panelLeft = clamp(left, 14, window.innerWidth - panelWidth - 14);
+        panelTop = top - panelHeightEstimate - gap;
+      } else {
+        panelLeft = clamp(left, 14, window.innerWidth - panelWidth - 14);
+        panelTop = clamp(top + height + gap, 14, window.innerHeight - panelHeightEstimate - 14);
+      }
+
+      setSpotlightStyle({
+        left,
+        top,
+        width,
+        height,
+      });
+      setPanelStyle({
+        left: panelLeft,
+        top: panelTop,
+        right: "auto",
+        bottom: "auto",
+      });
+    };
+
+    const scheduleMeasure = () => {
+      window.cancelAnimationFrame(raf);
+      raf = window.requestAnimationFrame(measure);
+    };
+
+    const target = document.querySelector<HTMLElement>(targetSelector);
+    target?.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+    scheduleMeasure();
+    scrollTimer = window.setTimeout(scheduleMeasure, 260);
+    window.addEventListener("resize", scheduleMeasure);
+    window.addEventListener("scroll", scheduleMeasure, true);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.clearTimeout(scrollTimer);
+      window.removeEventListener("resize", scheduleMeasure);
+      window.removeEventListener("scroll", scheduleMeasure, true);
+    };
+  }, [current.target]);
+
+  return (
+    <div className="onboarding-overlay" role="presentation">
+      <div className="onboarding-click-catcher" aria-hidden="true" />
+      <div className="onboarding-spotlight" aria-hidden="true" style={spotlightStyle} />
+      <div className="onboarding-panel" role="dialog" aria-modal="true" aria-label="首次使用引导" style={panelStyle}>
+        <div className="onboarding-progress">
+          {steps.map((item, index) => (
+            <button
+              key={item.title}
+              type="button"
+              className={index === step ? "active" : ""}
+              aria-label={`第 ${index + 1} 步`}
+              onClick={() => onStepChange(index)}
+            />
+          ))}
+        </div>
+        <div className="onboarding-copy">
+          <span>首次使用 · 第 {step + 1} 步 / {steps.length}</span>
+          <strong>{current.title}</strong>
+          <p>{current.body}</p>
+          <small>{current.status}</small>
+        </div>
+        <div className="onboarding-actions">
+          <button type="button" className="subtle-button" onClick={onFinish}>
+            跳过
+          </button>
+          {step === 0 && (
+            <button type="button" className="subtle-button" onClick={onOpenSettings}>
+              打开配置
+            </button>
+          )}
+          <button
+            type="button"
+            className="primary-action"
+            onClick={() => (last ? onFinish() : onStepChange(step + 1))}
+          >
+            {last ? "完成引导" : "下一步"}
+            {!last && <ArrowRight size={16} />}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

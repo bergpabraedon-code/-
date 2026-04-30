@@ -4,3 +4,4 @@ dist/
 .DS_Store
 screenshot-*.png
 generated_images/
+.data/
