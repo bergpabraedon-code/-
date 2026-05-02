@@ -35,6 +35,7 @@ type GenerateRequest = {
   prompt?: string;
   size?: string;
   aspectRatio?: string;
+  resolution?: string;
   quality?: string;
   outputFormat?: string;
   seed?: string;
@@ -53,6 +54,17 @@ type GenerateBody = {
   };
 };
 
+type ImageResult = {
+  ok: true;
+  status?: number;
+  images: Array<{ dataUrl: string; revisedPrompt?: string }>;
+  raw?: unknown;
+} | {
+  ok: false;
+  status?: number;
+  detail?: unknown;
+};
+
 type AdminUser = {
   username: string;
   passwordHash: string;
@@ -63,9 +75,11 @@ type AdminUser = {
 };
 
 type RequestLogStatus = "running" | "success" | "error";
+type RequestLogType = "image_generation" | "prompt_analysis";
 
 type RequestLog = {
   requestId: string;
+  requestType: RequestLogType;
   batchId?: string;
   batchIndex?: number;
   batchTotal?: number;
@@ -80,10 +94,19 @@ type RequestLog = {
   negativePrompt?: string;
   aspectRatio?: string;
   size?: string;
+  resolution?: string;
   quality?: string;
   outputFormat?: string;
   seed?: string;
+  agentId?: string;
+  agentName?: string;
+  agentScenario?: string;
+  promptVariant?: string;
   referenceCount: number;
+  upstreamPayloadKeys?: string[];
+  upstreamReferenceCount?: number;
+  upstreamReferenceMode?: string;
+  upstreamSize?: string;
   status: RequestLogStatus;
   httpStatus?: number;
   errorMessage?: string;
@@ -114,6 +137,7 @@ type AdminStore = {
 const API_TIMEOUT_MS = 300_000;
 const MAX_REQUEST_BYTES = 60 * 1024 * 1024;
 const DEFAULT_PROTOCOL: ImageProtocol = "custom-openai";
+const ALLOWED_API_BASE_URLS = ["https://www.taijiai.online/", "https://bobdong.cn/"];
 const SESSION_COOKIE = "image_studio_admin_session";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
 const DATA_DIR = join(process.cwd(), ".data");
@@ -323,6 +347,30 @@ function truncateText(value: unknown, max = 2000) {
   return text.slice(0, max);
 }
 
+function normalizeAllowedApiBaseUrl(value: string) {
+  const normalized = value.trim().replace(/\/+$/, "");
+  const match = ALLOWED_API_BASE_URLS.find((allowed) => allowed.replace(/\/+$/, "") === normalized);
+  if (!match) {
+    throw new Error("API URL 不在允许列表中");
+  }
+  return match;
+}
+
+function isAllowedApiBaseUrlError(error: unknown) {
+  return error instanceof Error && error.message === "API URL 不在允许列表中";
+}
+
+function httpStatusFromDetail(detail: unknown) {
+  if (!detail || typeof detail !== "object") return undefined;
+  const record = detail as Record<string, unknown>;
+  if (typeof record.status === "number") return record.status;
+  const error = record.error;
+  if (error && typeof error === "object" && typeof (error as Record<string, unknown>).status === "number") {
+    return (error as Record<string, unknown>).status as number;
+  }
+  return undefined;
+}
+
 function safeErrorSummary(detail: unknown) {
   const record = detail && typeof detail === "object" ? detail as Record<string, unknown> : {};
   const error = record.error && typeof record.error === "object" ? record.error as Record<string, unknown> : {};
@@ -361,7 +409,7 @@ function updateRequestLog(requestId: string, patch: Partial<RequestLog>) {
   writeAdminStore(store);
 }
 
-function generationEndpointLabel(protocol: ImageProtocol, model = "") {
+function generationEndpointLabel(protocol: ImageProtocol, model = "", referenceCount = 0) {
   if (protocol === "openai-responses") return "/v1/responses";
   if (protocol === "gemini-native") return `/models/${modelName(model)}:generateContent`;
   if (protocol === "google-imagen") return `/models/${modelName(model)}:predict`;
@@ -370,6 +418,8 @@ function generationEndpointLabel(protocol: ImageProtocol, model = "") {
       ? "/v2beta/stable-image/generate/ultra"
       : "/v2beta/stable-image/generate/core";
   }
+  if (protocol === "openai-images" && referenceCount > 0) return "/v1/images/edits";
+  if (protocol === "custom-openai" && referenceCount > 0) return "/v1/images/edits → /v1/images/generations";
   return protocol === "gemini-openai" ? "/images/generations" : "/v1/images/generations";
 }
 
@@ -454,14 +504,149 @@ function fullPrompt(request: GenerateRequest) {
     : request.prompt || "";
 }
 
-function dataUrlToReferencePayload(image: ReferenceImage) {
-  const [meta, b64 = ""] = image.dataUrl.split(",");
-  const mime = image.type || meta.match(/^data:(.*?);base64$/)?.[1] || "image/png";
+function dataUrlToReferenceImageUrl(image: ReferenceImage) {
+  if (image.dataUrl.startsWith("data:")) return image.dataUrl;
+  const mime = image.type || "image/png";
+  return `data:${mime};base64,${image.dataUrl}`;
+}
+
+function referenceImageToBuffer(image: ReferenceImage) {
+  const dataUrl = dataUrlToReferenceImageUrl(image);
+  const [, mime = image.type || "image/png", data = image.dataUrl] =
+    dataUrl.match(/^data:([^;]+);base64,(.*)$/) || [];
   return {
-    name: image.name,
-    mime_type: mime,
-    b64_json: b64,
+    mime,
+    data: Buffer.from(data, "base64"),
   };
+}
+
+function uploadedReferenceUrlFrom(value: unknown): string {
+  if (!value) return "";
+  if (typeof value === "string") return value.startsWith("http") ? value : "";
+  if (Array.isArray(value)) {
+    return value.map(uploadedReferenceUrlFrom).find(Boolean) || "";
+  }
+  if (typeof value !== "object") return "";
+  const record = value as Record<string, unknown>;
+  const directKeys = ["url", "imageUrl", "image_url", "fileUrl", "file_url", "downloadUrl", "download_url"];
+  for (const key of directKeys) {
+    const url = uploadedReferenceUrlFrom(record[key]);
+    if (url) return url;
+  }
+  return uploadedReferenceUrlFrom(record.data)
+    || uploadedReferenceUrlFrom(record.result)
+    || uploadedReferenceUrlFrom(record.file)
+    || uploadedReferenceUrlFrom(record.files)
+    || uploadedReferenceUrlFrom(record.images);
+}
+
+async function uploadCompatibleReferenceImage(baseUrl: string, apiKey: string, image: ReferenceImage, index: number) {
+  const { mime, data } = referenceImageToBuffer(image);
+  const fileName = image.name || `reference-${index + 1}.${mime.split("/")[1] || "png"}`;
+  const form = new FormData();
+  form.append("file", new Blob([data], { type: mime }), fileName);
+
+  const response = await fetchWithTimeout(endpoint(baseUrl, "/v1/uploads/images"), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: form,
+  }, 60_000);
+  const bodyText = await response.text();
+  if (!response.ok) {
+    throw new Error(`参考图上传失败：HTTP ${response.status}`);
+  }
+
+  const url = uploadedReferenceUrlFrom(parseMaybeJson(bodyText));
+  if (!url) {
+    throw new Error("参考图上传成功，但响应中没有可用 URL");
+  }
+  return url;
+}
+
+async function compatibleReferenceImageUrls(baseUrl: string, apiKey: string, references: ReferenceImage[]) {
+  if (references.length === 0) {
+    return {
+      urls: [] as string[],
+      mode: "none",
+      uploaded: false,
+    };
+  }
+
+  try {
+    const urls = await Promise.all(
+      references.map((image, index) => uploadCompatibleReferenceImage(baseUrl, apiKey, image, index)),
+    );
+    return {
+      urls,
+      mode: "image_urls:uploaded_url",
+      uploaded: true,
+    };
+  } catch {
+    return {
+      urls: references.map(dataUrlToReferenceImageUrl),
+      mode: "image_urls:data_uri",
+      uploaded: false,
+    };
+  }
+}
+
+function shouldFallbackToGeneration(result: ImageResult) {
+  if (result.ok) return false;
+  const status = result.status || 0;
+  if (![400, 404, 405, 415, 422, 501].includes(status)) return false;
+  const detailText = JSON.stringify(result.detail || {}).toLowerCase();
+  return /invalid url|not found|method not allowed|unsupported|unknown endpoint|no route|content-type/.test(detailText);
+}
+
+const SIZE_BY_RATIO: Record<string, string> = {
+  "1:1": "1024x1024",
+  "4:5": "1024x1280",
+  "5:4": "1280x1024",
+  "3:4": "1024x1365",
+  "4:3": "1365x1024",
+  "2:3": "1024x1536",
+  "3:2": "1536x1024",
+  "9:16": "1024x1792",
+  "16:9": "1792x1024",
+  "21:9": "1792x768",
+  "9:21": "768x1792",
+};
+
+const RESOLUTION_MULTIPLIER: Record<string, number> = {
+  "1K": 1,
+  "2K": 2,
+  "4K": 4,
+};
+
+function normalizeResolution(value?: string) {
+  return value === "2K" || value === "4K" ? value : "1K";
+}
+
+function scaleSize(size: string, resolution = "1K") {
+  const multiplier = RESOLUTION_MULTIPLIER[normalizeResolution(resolution)] || 1;
+  if (multiplier === 1) return size;
+  const [width, height] = size.split("x").map((item) => Number(item));
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return size;
+  return `${Math.round(width * multiplier)}x${Math.round(height * multiplier)}`;
+}
+
+function imageSizeForProtocol(request: GenerateRequest, protocol: ImageProtocol) {
+  if (protocol === "custom-openai" && isImage2Model(request.model) && request.aspectRatio) return request.aspectRatio;
+  return request.aspectRatio
+    ? scaleSize(SIZE_BY_RATIO[request.aspectRatio] || SIZE_BY_RATIO["1:1"], request.resolution)
+    : request.size || "auto";
+}
+
+function isImage2Model(model = "") {
+  const normalized = model.toLowerCase();
+  return normalized === "gpt-image-2" || normalized === "gpt-5.4-image-2" || normalized.includes("image-2");
+}
+
+function imageGenerationSize(request: GenerateRequest) {
+  if (isImage2Model(request.model) && request.aspectRatio) return request.aspectRatio;
+  return request.size || request.aspectRatio || "auto";
 }
 
 function dataUrlToGeminiPart(image: ReferenceImage) {
@@ -593,6 +778,7 @@ function normalizeAnalysisPayload(value: unknown, analysisModel: string) {
     suggestedParams: {
       aspectRatio: typeof suggestedParams.aspectRatio === "string" ? suggestedParams.aspectRatio : undefined,
       size: typeof suggestedParams.size === "string" ? suggestedParams.size : undefined,
+      resolution: typeof suggestedParams.resolution === "string" ? suggestedParams.resolution : undefined,
       count: typeof suggestedParams.count === "number" ? suggestedParams.count : undefined,
       quality: typeof suggestedParams.quality === "string" ? suggestedParams.quality : undefined,
       styleStrength: styleStrength === "low" || styleStrength === "medium" || styleStrength === "high"
@@ -623,6 +809,7 @@ async function analyzePromptWithGpt(baseUrl: string, apiKey: string, body: Proxy
     imageModel: getString(body, "imageModel"),
     aspectRatio: getString(body, "aspectRatio"),
     size: getString(body, "size"),
+    resolution: getString(body, "resolution"),
     quality: getString(body, "quality"),
     outputFormat: getString(body, "outputFormat"),
     count: getNumber(body.count),
@@ -637,7 +824,7 @@ async function analyzePromptWithGpt(baseUrl: string, apiKey: string, body: Proxy
     "只返回 JSON，不要使用 Markdown。",
     "JSON 字段必须包含 safe, score, riskLevel, summary, optimizedPrompt, suggestedNegativePrompt, suggestedParams, risks, styleEnhancements。",
     "riskLevel 只能是 low、medium、high。safe=false 仅用于高风险或大概率失败场景。",
-    "suggestedParams 可包含 aspectRatio, size, count, quality, styleStrength, referenceWeight。",
+    "suggestedParams 可包含 aspectRatio, size, resolution, count, quality, styleStrength, referenceWeight。",
     "risks 每项包含 level, title, description, fix。styleEnhancements 每项包含 name, description, promptFragment。",
     "优化提示词时要保留用户原意，不要替换主体，不要加入未授权的具体人物身份。",
   ].join("\n");
@@ -657,7 +844,7 @@ async function analyzePromptWithGpt(baseUrl: string, apiKey: string, body: Proxy
       temperature: 0.2,
       response_format: { type: "json_object" },
     }),
-  }, 90_000);
+  }, 20_000);
   const text = await response.text();
   if (!response.ok) throw detailFromUpstream(response.status, text);
   const payload = parseMaybeJson(text);
@@ -674,7 +861,7 @@ async function analyzePromptWithGpt(baseUrl: string, apiKey: string, body: Proxy
   return normalizeAnalysisPayload(analysis, analysisModel);
 }
 
-async function readOpenAiImageResponse(response: Response, outputFormat: string) {
+async function readOpenAiImageResponse(response: Response, outputFormat: string): Promise<ImageResult> {
   const bodyText = await response.text();
   if (!response.ok) {
     return {
@@ -720,15 +907,24 @@ async function readOpenAiImageResponse(response: Response, outputFormat: string)
     }),
   );
 
+  const usableImages = images.filter(Boolean) as Array<{ dataUrl: string; revisedPrompt?: string }>;
+  if (usableImages.length === 0) {
+    return {
+      ok: false,
+      status: response.status,
+      detail: { status: response.status, error: "接口没有返回可识别的图片数据", raw: json },
+    };
+  }
+
   return {
     ok: true,
     status: response.status,
-    images: images.filter(Boolean),
+    images: usableImages,
     raw: json,
   };
 }
 
-async function readGenericJsonImageResponse(response: Response, outputFormat: string) {
+async function readGenericJsonImageResponse(response: Response, outputFormat: string): Promise<ImageResult> {
   const bodyText = await response.text();
   if (!response.ok) {
     return {
@@ -758,26 +954,98 @@ async function readGenericJsonImageResponse(response: Response, outputFormat: st
   };
 }
 
-async function generateOpenAiCompatible(baseUrl: string, apiKey: string, request: GenerateRequest) {
+async function generateOpenAiImageEdit(baseUrl: string, apiKey: string, request: GenerateRequest, references: ReferenceImage[], requestId?: string) {
+  const outputFormat = request.outputFormat || "png";
+  const requestSize = imageSizeForProtocol(request, "openai-images");
+  const form = new FormData();
+  form.append("model", request.model || "gpt-image-2");
+  form.append("prompt", fullPrompt(request));
+  form.append("n", "1");
+  form.append("response_format", "b64_json");
+  if (requestSize && requestSize !== "auto") form.append("size", requestSize);
+  if (request.quality && request.quality !== "auto") form.append("quality", request.quality);
+  if (outputFormat && outputFormat !== "png") form.append("output_format", outputFormat);
+  references.forEach((image, index) => {
+    const { mime, data } = referenceImageToBuffer(image);
+    const fileName = image.name || `reference-${index + 1}.${mime.split("/")[1] || "png"}`;
+    form.append("image[]", new Blob([data], { type: mime }), fileName);
+  });
+
+  if (requestId) {
+    updateRequestLog(requestId, {
+      endpoint: "/v1/images/edits",
+      upstreamPayloadKeys: [
+        "model",
+        "prompt",
+        "n",
+        "response_format",
+        ...(requestSize && requestSize !== "auto" ? ["size"] : []),
+        ...(request.quality && request.quality !== "auto" ? ["quality"] : []),
+        ...(outputFormat && outputFormat !== "png" ? ["output_format"] : []),
+        "image[]",
+      ],
+      upstreamReferenceCount: references.length,
+      upstreamReferenceMode: "multipart:image[]",
+      upstreamSize: requestSize && requestSize !== "auto" ? requestSize : undefined,
+    });
+  }
+
+  const response = await fetchWithTimeout(endpoint(baseUrl, "/v1/images/edits"), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: form,
+  });
+  return readOpenAiImageResponse(response, outputFormat);
+}
+
+async function generateOpenAiCompatible(baseUrl: string, apiKey: string, request: GenerateRequest, requestId?: string) {
   const protocol = request.protocol || DEFAULT_PROTOCOL;
   const references = Array.isArray(request.referenceImages) ? request.referenceImages : [];
   const outputFormat = request.outputFormat || "png";
+  if ((protocol === "openai-images" || protocol === "custom-openai") && references.length > 0) {
+    const editResult = await generateOpenAiImageEdit(baseUrl, apiKey, request, references, requestId);
+    if (editResult.ok || protocol === "openai-images" || !shouldFallbackToGeneration(editResult)) {
+      return editResult;
+    }
+  }
+  const requestSize = imageSizeForProtocol(request, protocol);
   const payload: Record<string, unknown> = {
     model: request.model,
     prompt: fullPrompt(request),
     n: 1,
     response_format: "b64_json",
   };
-  if (request.size && request.size !== "auto") payload.size = request.size;
+  if (requestSize && requestSize !== "auto") payload.size = requestSize;
   if (request.quality && request.quality !== "auto") payload.quality = request.quality;
   if (outputFormat && outputFormat !== "png") payload.output_format = outputFormat;
   if (request.aspectRatio && protocol === "custom-openai") payload.aspect_ratio = request.aspectRatio;
+  if (protocol === "custom-openai" && isImage2Model(request.model) && request.resolution && request.resolution !== "1K") {
+    payload.resolution = request.resolution;
+  }
   if (request.seed) payload.seed = Number.isFinite(Number(request.seed)) ? Number(request.seed) : request.seed;
+  let referenceMode = "none";
+  let referenceCount = 0;
   if (references.length > 0 && protocol === "custom-openai") {
-    payload.reference_images = references.map(dataUrlToReferencePayload);
+    const referencePayload = await compatibleReferenceImageUrls(baseUrl, apiKey, references);
+    if (referencePayload.urls.length > 0) {
+      payload.image_urls = referencePayload.urls;
+      referenceMode = referencePayload.mode;
+      referenceCount = referencePayload.urls.length;
+    }
   }
 
   const path = protocol === "gemini-openai" ? "/images/generations" : "/v1/images/generations";
+  if (requestId) {
+    updateRequestLog(requestId, {
+      endpoint: path,
+      upstreamPayloadKeys: Object.keys(payload),
+      upstreamReferenceCount: referenceCount,
+      upstreamReferenceMode: referenceMode,
+      upstreamSize: typeof payload.size === "string" ? payload.size : undefined,
+    });
+  }
   const response = await fetchWithTimeout(endpoint(baseUrl, path), {
     method: "POST",
     headers: {
@@ -1073,7 +1341,7 @@ function imageProxyPlugin(): PluginOption {
             const logs = store.requestLogs
               .filter((log) => !status || log.status === status)
               .filter((log) => !model || log.model === model)
-              .filter((log) => !query || `${log.requestId} ${log.clientId} ${log.prompt} ${log.model} ${log.errorMessage || ""}`.toLowerCase().includes(query))
+              .filter((log) => !query || `${log.requestId} ${log.clientId} ${log.prompt} ${log.model} ${log.resolution || ""} ${log.agentName || ""} ${log.agentScenario || ""} ${log.errorMessage || ""}`.toLowerCase().includes(query))
               .slice(0, 300);
             sendJson(res, 200, { ok: true, logs });
             return;
@@ -1104,12 +1372,29 @@ function imageProxyPlugin(): PluginOption {
         try {
           const body = await readJsonBody(req);
           const protocol = getProtocol(body.protocol);
-          const baseUrl = getString(body, "baseUrl");
+          const baseUrl = normalizeAllowedApiBaseUrl(getString(body, "baseUrl"));
           const apiKey = getString(body, "apiKey");
+          if (!apiKey) {
+            sendJson(res, 400, { ok: false, detail: { status: 400, error: "API Key 不能为空" } });
+            return;
+          }
           const { models, raw } = await loadUpstreamModels(protocol, baseUrl, apiKey);
           sendJson(res, 200, { ok: true, models: [...new Set(models)].sort(), raw });
         } catch (error) {
-          sendJson(res, 500, { ok: false, detail: { error: error instanceof Error ? error.message : String(error) } });
+          const upstreamStatus = httpStatusFromDetail(error);
+          const summary = safeErrorSummary(error);
+          const status = isAllowedApiBaseUrlError(error) ? 400 : upstreamStatus || 500;
+          const isAuthError = status === 401 || status === 403;
+          sendJson(res, status, {
+            ok: false,
+            detail: {
+              status,
+              error: isAuthError ? "API Key 错误或无权限，请检查后重试" : summary.message,
+              type: summary.type,
+              code: summary.code,
+              raw: summary.raw,
+            },
+          });
         }
       });
 
@@ -1118,18 +1403,78 @@ function imageProxyPlugin(): PluginOption {
           sendJson(res, 405, { ok: false, error: "Method not allowed" });
           return;
         }
+        const requestId = randomUUID();
+        const startedAt = Date.now();
+        let logCreated = false;
         try {
           const body = await readJsonBody(req);
-          const baseUrl = getString(body, "baseUrl");
+          const baseUrl = normalizeAllowedApiBaseUrl(getString(body, "baseUrl"));
           const apiKey = getString(body, "apiKey");
+          const protocol = getProtocol(body.protocol);
+          const clientId = getString(body, "clientId") || "anonymous";
+          const analysisModel = getString(body, "analysisModel");
+          const prompt = getString(body, "prompt");
+
+          createRequestLog({
+            requestId,
+            requestType: "prompt_analysis",
+            clientId: truncateText(clientId, 120),
+            clientUserAgent: truncateText(req.headers["user-agent"] || "", 500),
+            clientIpHash: hashClientIp(req),
+            protocol,
+            apiBaseUrl: baseUrl.replace(/\/+$/, ""),
+            endpoint: "/v1/chat/completions",
+            model: truncateText(analysisModel || "", 240),
+            prompt: truncateText(prompt || "", 4000),
+            negativePrompt: getString(body, "negativePrompt") ? truncateText(getString(body, "negativePrompt"), 2400) : undefined,
+            aspectRatio: getString(body, "aspectRatio") || undefined,
+            size: getString(body, "size") || undefined,
+            resolution: getString(body, "resolution") || undefined,
+            quality: getString(body, "quality") || undefined,
+            outputFormat: getString(body, "outputFormat") || undefined,
+            agentId: getString(body, "agentId") || undefined,
+            agentName: getString(body, "agentName") ? truncateText(getString(body, "agentName"), 120) : undefined,
+            agentScenario: getString(body, "agentScenario") ? truncateText(getString(body, "agentScenario"), 240) : undefined,
+            promptVariant: getString(body, "promptVariant") || undefined,
+            referenceCount: getNumber(body.referenceCount) || 0,
+            status: "running",
+            createdAt: startedAt,
+            startedAt,
+            imageSaved: false,
+          });
+          logCreated = true;
+
           const analysis = await analyzePromptWithGpt(baseUrl, apiKey, body);
-          sendJson(res, 200, { ok: true, analysis });
+          const finishedAt = Date.now();
+          updateRequestLog(requestId, {
+            status: "success",
+            httpStatus: 200,
+            finishedAt,
+            durationMs: finishedAt - startedAt,
+          });
+          sendJson(res, 200, { ok: true, requestId, analysis });
         } catch (error) {
-          sendJson(res, 500, {
+          const detail = error && typeof error === "object" && "error" in error
+            ? error
+            : { error: error instanceof Error ? error.message : String(error) };
+          if (logCreated) {
+            const summary = safeErrorSummary(detail);
+            const finishedAt = Date.now();
+            updateRequestLog(requestId, {
+              status: "error",
+              httpStatus: 500,
+              errorMessage: summary.message,
+              errorType: summary.type || "prompt_analysis_error",
+              errorCode: summary.code,
+              errorRaw: summary.raw,
+              finishedAt,
+              durationMs: finishedAt - startedAt,
+            });
+          }
+          sendJson(res, isAllowedApiBaseUrlError(error) ? 400 : 500, {
             ok: false,
-            detail: error && typeof error === "object" && "error" in error
-              ? error
-              : { error: error instanceof Error ? error.message : String(error) },
+            requestId,
+            detail,
           });
         }
       });
@@ -1144,7 +1489,7 @@ function imageProxyPlugin(): PluginOption {
         let logCreated = false;
         try {
           const body = await readJsonBody(req);
-          const baseUrl = getString(body, "baseUrl");
+          const baseUrl = normalizeAllowedApiBaseUrl(getString(body, "baseUrl"));
           const apiKey = getString(body, "apiKey");
           const request = (body.request && typeof body.request === "object" ? body.request : {}) as GenerateRequest;
           const protocol = getProtocol(request.protocol);
@@ -1156,6 +1501,7 @@ function imageProxyPlugin(): PluginOption {
 
           createRequestLog({
             requestId,
+            requestType: "image_generation",
             batchId: typeof requestMeta.batchId === "string" ? requestMeta.batchId : undefined,
             batchIndex: getNumber(requestMeta.index),
             batchTotal: getNumber(requestMeta.total),
@@ -1164,15 +1510,24 @@ function imageProxyPlugin(): PluginOption {
             clientIpHash: hashClientIp(req),
             protocol,
             apiBaseUrl: baseUrl.replace(/\/+$/, ""),
-            endpoint: generationEndpointLabel(protocol, request.model),
+            endpoint: generationEndpointLabel(
+              protocol,
+              request.model,
+              Array.isArray(request.referenceImages) ? request.referenceImages.length : 0,
+            ),
             model: truncateText(request.model || "", 240),
             prompt: truncateText(request.prompt || "", 4000),
             negativePrompt: request.negativePrompt ? truncateText(request.negativePrompt, 2400) : undefined,
             aspectRatio: request.aspectRatio,
             size: request.size,
+            resolution: request.resolution,
             quality: request.quality,
             outputFormat: request.outputFormat,
             seed: request.seed,
+            agentId: typeof requestMeta.agentId === "string" ? requestMeta.agentId : undefined,
+            agentName: typeof requestMeta.agentName === "string" ? truncateText(requestMeta.agentName, 120) : undefined,
+            agentScenario: typeof requestMeta.agentScenario === "string" ? truncateText(requestMeta.agentScenario, 240) : undefined,
+            promptVariant: typeof requestMeta.promptVariant === "string" ? requestMeta.promptVariant : undefined,
             referenceCount: Array.isArray(request.referenceImages) ? request.referenceImages.length : 0,
             status: "running",
             createdAt: startedAt,
@@ -1212,7 +1567,7 @@ function imageProxyPlugin(): PluginOption {
                 ? await generateImagen(baseUrl, apiKey, request)
                 : protocol === "stability-core"
                   ? await generateStability(baseUrl, apiKey, request)
-                  : await generateOpenAiCompatible(baseUrl, apiKey, request);
+                  : await generateOpenAiCompatible(baseUrl, apiKey, request, requestId);
 
           const finishedAt = Date.now();
           const durationMs = finishedAt - startedAt;
@@ -1252,7 +1607,7 @@ function imageProxyPlugin(): PluginOption {
               durationMs: finishedAt - startedAt,
             });
           }
-          sendJson(res, 500, { ok: false, requestId, detail: { error: message } });
+          sendJson(res, isAllowedApiBaseUrlError(error) ? 400 : 500, { ok: false, requestId, detail: { error: message } });
         }
       });
     },
