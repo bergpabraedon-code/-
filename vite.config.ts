@@ -29,6 +29,13 @@ type ReferenceImage = {
   type: string;
 };
 
+type ReferenceUrlPayload = {
+  field: "image_urls" | "reference_image_urls";
+  urls: string[];
+  mode: string;
+  cleanup?: () => void;
+};
+
 type GenerateRequest = {
   protocol?: ImageProtocol;
   model?: string;
@@ -150,6 +157,15 @@ const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
 const DATA_DIR = join(process.cwd(), ".data");
 const ADMIN_STORE_PATH = join(DATA_DIR, "admin-store.json");
 const FRONTEND_VERSION_PATHS = ["src", "index.html", "package.json", "vite.config.ts"];
+const REFERENCE_TEMP_TTL_MS = 1000 * 60 * 10;
+const PUBLIC_REFERENCE_BASE_URL = "https://imagehub.taijiai.online";
+
+const temporaryReferences = new Map<string, {
+  bytes: Buffer;
+  mime: string;
+  name: string;
+  expiresAt: number;
+}>();
 
 function formatFrontendVersion(value: number) {
   const date = new Date(value);
@@ -499,8 +515,8 @@ function generationEndpointLabel(protocol: ImageProtocol, model = "", referenceC
       ? "/v2beta/stable-image/generate/ultra"
       : "/v2beta/stable-image/generate/core";
   }
-  if (protocol === "openai-images" && referenceCount > 0) return "/v1/images/edits";
-  if (protocol === "custom-openai" && referenceCount > 0) return "/v1/images/edits → /v1/images/generations";
+  if (protocol === "openai-images" && referenceCount > 0) return "/v1/images/edits → /v1/images/generations";
+  if (protocol === "custom-openai" && referenceCount > 0) return "/v1/images/generations";
   return protocol === "gemini-openai" ? "/images/generations" : "/v1/images/generations";
 }
 
@@ -546,6 +562,24 @@ function endpoint(baseUrl: string, path: string) {
     ? path.slice(3)
     : path;
   return `${cleanBase}${cleanPath}`;
+}
+
+function publicBaseUrlFromRequest(_req: IncomingMessage) {
+  return PUBLIC_REFERENCE_BASE_URL;
+}
+
+function isPublicReferenceBaseUrl(value = "") {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    return Boolean(url.protocol.startsWith("http"))
+      && host !== "localhost"
+      && host !== "127.0.0.1"
+      && host !== "::1"
+      && !host.endsWith(".local");
+  } catch {
+    return false;
+  }
 }
 
 function modelName(value = "") {
@@ -646,22 +680,88 @@ async function uploadCompatibleReferenceImage(baseUrl: string, apiKey: string, i
   return url;
 }
 
-function compatibleReferenceImageUrls(references: ReferenceImage[]) {
-  if (references.length === 0) {
-    return {
-      urls: [] as string[],
-      mode: "none",
-      uploaded: false,
-    };
+function cleanupExpiredTemporaryReferences() {
+  const now = Date.now();
+  for (const [id, record] of temporaryReferences.entries()) {
+    if (record.expiresAt <= now) temporaryReferences.delete(id);
+  }
+}
+
+function scheduleTemporaryReferenceCleanup(id: string) {
+  const timer = setTimeout(() => temporaryReferences.delete(id), REFERENCE_TEMP_TTL_MS + 1000);
+  const maybeTimer = timer as unknown as { unref?: () => void };
+  if (typeof maybeTimer.unref === "function") maybeTimer.unref();
+}
+
+function createTemporaryReferenceUrls(references: ReferenceImage[], publicBaseUrl: string) {
+  cleanupExpiredTemporaryReferences();
+  const ids: string[] = [];
+  const urls = references.map((image, index) => {
+    const { mime, data } = referenceImageToBuffer(image);
+    const id = randomUUID();
+    ids.push(id);
+    temporaryReferences.set(id, {
+      bytes: data,
+      mime,
+      name: image.name || `reference-${index + 1}.${mime.split("/")[1] || "png"}`,
+      expiresAt: Date.now() + REFERENCE_TEMP_TTL_MS,
+    });
+    scheduleTemporaryReferenceCleanup(id);
+    return `${publicBaseUrl}/api/reference-images/${encodeURIComponent(id)}`;
+  });
+  return {
+    urls,
+    cleanup: () => ids.forEach((id) => temporaryReferences.delete(id)),
+  };
+}
+
+function compatibleReferenceImagePayloads(references: ReferenceImage[], publicBaseUrl = ""): ReferenceUrlPayload[] {
+  if (references.length === 0) return [];
+
+  const dataUriUrls = references.map(dataUrlToReferenceImageUrl);
+  const payloads: ReferenceUrlPayload[] = [];
+
+  if (isPublicReferenceBaseUrl(publicBaseUrl)) {
+    const temp = createTemporaryReferenceUrls(references, publicBaseUrl);
+    payloads.push({
+      field: "image_urls",
+      urls: temp.urls,
+      mode: "image_urls:temporary_url",
+      cleanup: temp.cleanup,
+    });
   }
 
-  const dataUriPayload = {
-    urls: references.map(dataUrlToReferenceImageUrl),
+  payloads.push({
+    field: "image_urls",
+    urls: dataUriUrls,
     mode: "image_urls:data_uri",
-    uploaded: false,
-  };
+  });
 
-  return dataUriPayload;
+  if (isPublicReferenceBaseUrl(publicBaseUrl)) {
+    const temp = createTemporaryReferenceUrls(references, publicBaseUrl);
+    payloads.push({
+      field: "reference_image_urls",
+      urls: temp.urls,
+      mode: "reference_image_urls:temporary_url",
+      cleanup: temp.cleanup,
+    });
+  }
+
+  payloads.push({
+    field: "reference_image_urls",
+    urls: dataUriUrls,
+    mode: "reference_image_urls:data_uri",
+  });
+
+  return payloads;
+}
+
+function shouldTryNextReferencePayload(result: ImageResult) {
+  if (result.ok) return false;
+  const status = result.status || 0;
+  if ([400, 401, 403, 404, 405, 413, 415, 422, 429, 500, 502, 503].includes(status)) return true;
+  const detailText = JSON.stringify(result.detail || {}).toLowerCase();
+  return /image_urls|reference_image_urls|reference|image|url|data uri|base64|payload|too large|unsupported|unknown|invalid/.test(detailText);
 }
 
 function shouldFallbackToGeneration(result: ImageResult) {
@@ -1111,7 +1211,7 @@ async function generateOpenAiImageEdit(baseUrl: string, apiKey: string, request:
   return readOpenAiImageResponse(response, outputFormat);
 }
 
-async function generateOpenAiCompatible(baseUrl: string, apiKey: string, request: GenerateRequest, requestId?: string) {
+async function generateOpenAiCompatible(baseUrl: string, apiKey: string, request: GenerateRequest, requestId?: string, publicBaseUrl = "") {
   const protocol = request.protocol || DEFAULT_PROTOCOL;
   const references = Array.isArray(request.referenceImages) ? request.referenceImages : [];
   const outputFormat = request.outputFormat || "png";
@@ -1145,39 +1245,82 @@ async function generateOpenAiCompatible(baseUrl: string, apiKey: string, request
     payload.resolution = request.resolution;
   }
   if (request.seed) payload.seed = Number.isFinite(Number(request.seed)) ? Number(request.seed) : request.seed;
-  let referenceMode = "none";
-  let referenceCount = 0;
-  if (references.length > 0 && (protocol === "custom-openai" || protocol === "openai-images")) {
-    const referencePayload = compatibleReferenceImageUrls(references);
-    if (referencePayload.urls.length > 0) {
-      payload.image_urls = referencePayload.urls;
-      referenceMode = editFallback
-        ? `${referencePayload.mode}:fallback_from_edits_${editFallback.status || "error"}`
-        : referencePayload.mode;
-      referenceCount = referencePayload.urls.length;
-    }
-  }
 
   const path = protocol === "gemini-openai" ? "/images/generations" : "/v1/images/generations";
-  if (requestId) {
-    updateRequestLog(requestId, {
-      endpoint: path,
-      upstreamPayloadKeys: Object.keys(payload),
-      upstreamReferenceCount: referenceCount,
-      upstreamReferenceMode: referenceMode,
-      upstreamSize: typeof payload.size === "string" ? payload.size : undefined,
-      upstreamRequest: sanitizeForLog(editFallback ? { ...payload, _proxyFallback: editFallback } : payload),
-    });
+  const referencePayloads = references.length > 0 && (protocol === "custom-openai" || protocol === "openai-images")
+    ? compatibleReferenceImagePayloads(references, publicBaseUrl)
+    : [];
+  const attempts = referencePayloads.length > 0 ? referencePayloads : [undefined];
+  const referenceAttemptErrors: Array<Record<string, unknown>> = [];
+  let lastResult: ImageResult | undefined;
+
+  try {
+    for (const [attemptIndex, referencePayload] of attempts.entries()) {
+      const attemptPayload = { ...payload };
+      let referenceMode = "none";
+      let referenceCount = 0;
+      if (referencePayload && referencePayload.urls.length > 0) {
+        attemptPayload[referencePayload.field] = referencePayload.urls;
+        referenceMode = editFallback
+          ? `${referencePayload.mode}:fallback_from_edits_${editFallback.status || "error"}`
+          : referencePayload.mode;
+        referenceCount = referencePayload.urls.length;
+      }
+
+      if (requestId) {
+        updateRequestLog(requestId, {
+          endpoint: path,
+          upstreamPayloadKeys: Object.keys(attemptPayload),
+          upstreamReferenceCount: referenceCount,
+          upstreamReferenceMode: referenceMode,
+          upstreamSize: typeof attemptPayload.size === "string" ? attemptPayload.size : undefined,
+          upstreamRequest: sanitizeForLog({
+            ...attemptPayload,
+            ...(editFallback ? { _proxyFallback: editFallback } : {}),
+            _proxyReferenceAttempt: attemptIndex + 1,
+            _proxyReferenceAttemptErrors: referenceAttemptErrors,
+          }),
+        });
+      }
+
+      try {
+        const response = await fetchWithTimeout(endpoint(baseUrl, path), {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(attemptPayload),
+        });
+        const result = await readOpenAiImageResponse(response, outputFormat);
+        if (result.ok) return result;
+        lastResult = result;
+        const summary = safeErrorSummary(result.detail);
+        referenceAttemptErrors.push({
+          attempt: attemptIndex + 1,
+          field: referencePayload?.field || "none",
+          mode: referenceMode,
+          status: result.status,
+          message: summary.message,
+          type: summary.type,
+          code: summary.code,
+        });
+        if (!referencePayload || attemptIndex >= attempts.length - 1 || !shouldTryNextReferencePayload(result)) {
+          return result;
+        }
+      } finally {
+        referencePayload?.cleanup?.();
+      }
+    }
+  } finally {
+    referencePayloads.forEach((item) => item.cleanup?.());
   }
-  const response = await fetchWithTimeout(endpoint(baseUrl, path), {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
-  return readOpenAiImageResponse(response, outputFormat);
+
+  return lastResult || {
+    ok: false,
+    status: 500,
+    detail: { error: "参考图请求没有得到有效响应" },
+  };
 }
 
 async function generateOpenAiResponses(baseUrl: string, apiKey: string, request: GenerateRequest, requestId?: string) {
@@ -1376,6 +1519,30 @@ function imageProxyPlugin(): PluginOption {
     name: "image-api-proxy",
     configureServer(server: ViteDevServer) {
       ensureAdminStore();
+      server.middlewares.use("/api/reference-images", (req, res) => {
+        if (req.method !== "GET" && req.method !== "HEAD") {
+          sendJson(res, 405, { ok: false, error: "Method not allowed" });
+          return;
+        }
+        cleanupExpiredTemporaryReferences();
+        const id = decodeURIComponent((req.url || "/").split("?")[0]?.replace(/^\/+/, "") || "");
+        const record = id ? temporaryReferences.get(id) : undefined;
+        if (!record || record.expiresAt <= Date.now()) {
+          sendJson(res, 404, { ok: false, error: "参考图已过期或不存在" });
+          return;
+        }
+        res.statusCode = 200;
+        res.setHeader("Content-Type", record.mime);
+        res.setHeader("Content-Length", String(record.bytes.length));
+        res.setHeader("Cache-Control", "no-store, max-age=0");
+        res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(record.name)}"`);
+        if (req.method === "HEAD") {
+          res.end();
+          return;
+        }
+        res.end(record.bytes);
+      });
+
       server.middlewares.use("/api/admin", async (req, res) => {
         const path = (req.url || "/").split("?")[0] || "/";
         const session = getAdminSession(req);
@@ -1663,6 +1830,7 @@ function imageProxyPlugin(): PluginOption {
           const body = await readJsonBody(req);
           const baseUrl = normalizeAllowedApiBaseUrl(getString(body, "baseUrl"));
           const apiKey = getString(body, "apiKey");
+          const publicBaseUrl = publicBaseUrlFromRequest(req);
           const request = (body.request && typeof body.request === "object" ? body.request : {}) as GenerateRequest;
           const protocol = getProtocol(request.protocol);
           request.protocol = protocol;
@@ -1747,7 +1915,7 @@ function imageProxyPlugin(): PluginOption {
                 ? await generateImagen(baseUrl, apiKey, request, requestId)
                 : protocol === "stability-core"
                   ? await generateStability(baseUrl, apiKey, request, requestId)
-                  : await generateOpenAiCompatible(baseUrl, apiKey, request, requestId);
+                  : await generateOpenAiCompatible(baseUrl, apiKey, request, requestId, publicBaseUrl);
 
           const finishedAt = Date.now();
           const durationMs = finishedAt - startedAt;

@@ -1983,6 +1983,28 @@ textarea:focus-visible {
   font-size: 13px;
 }
 
+.tile-state-button {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.tile-state-button span {
+  padding: 4px 9px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  opacity: 0.78;
+}
+
+.tile-state-button:hover span,
+.tile-state-button:focus-visible span {
+  opacity: 1;
+}
+
 .tile-state strong {
   font-size: 14px;
 }
@@ -2164,16 +2186,26 @@ textarea:focus-visible {
 }
 
 .tile-error-line {
+  display: block;
   overflow: hidden;
+  width: 100%;
   padding: 6px 8px;
   border: 1px solid #efb4af;
   border-radius: 7px;
   background: var(--red-soft);
   color: var(--red);
+  cursor: pointer;
   font-size: 12px;
   font-weight: 700;
+  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.tile-error-line:hover,
+.tile-error-line:focus-visible {
+  border-color: #db7b74;
+  background: #fff0ee;
 }
 
 .tile-error {
@@ -4708,6 +4740,54 @@ textarea:focus-visible {
   height: auto;
 }
 
+.preview-stage.is-error-detail {
+  padding: 22px;
+  background:
+    linear-gradient(135deg, rgba(191, 47, 43, 0.12), transparent 42%),
+    #141411;
+}
+
+.preview-error-frame {
+  display: grid;
+  width: min(520px, 100%);
+  gap: 10px;
+  justify-items: center;
+  padding: 26px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  text-align: center;
+}
+
+.preview-error-frame svg {
+  color: #ff8f84;
+}
+
+.preview-error-frame strong {
+  font-size: 18px;
+}
+
+.preview-error-frame span {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.preview-error-frame code {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .preview-side {
   display: flex;
   min-width: 0;
@@ -4855,6 +4935,33 @@ textarea:focus-visible {
   color: #34362f;
   font-size: 13px;
   line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.preview-error-detail {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #efb4af;
+  border-radius: 8px;
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.preview-error-detail strong {
+  font-size: 13px;
+}
+
+.preview-error-detail pre {
+  max-height: 240px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.76);
+  color: #8e2b27;
+  font-size: 11px;
+  line-height: 1.45;
   white-space: pre-wrap;
 }
 

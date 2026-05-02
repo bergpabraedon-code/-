@@ -305,7 +305,7 @@ type AnalysisCountdown = {
 type PreviewItem = {
   id: string;
   requestId?: string;
-  url: string;
+  url?: string;
   protocol?: ImageProtocol;
   prompt: string;
   model: string;
@@ -396,6 +396,8 @@ const STORE_NAME = "history";
 const HISTORY_PAGE_SIZE = 20;
 const REFERENCE_LIMIT = 6;
 const MAX_REFERENCE_SIZE = 10 * 1024 * 1024;
+const MAX_REFERENCE_REQUEST_BYTES = 900 * 1024;
+const REFERENCE_REQUEST_MAX_EDGE = 1536;
 const MIN_REFERENCE_EDGE = 128;
 const LARGE_REFERENCE_EDGE = 4096;
 const PROMPT_TEXTAREA_MAX_HEIGHT = 220;
@@ -1231,11 +1233,112 @@ function referenceImagesForHistory(images: UploadedReference[]) {
   return normalizeStoredReferenceImages(images).map((image) => ({ ...image }));
 }
 
-function referenceImagesForRequest(images: UploadedReference[]) {
-  return images.map((image) => ({
+function dataUrlByteLength(dataUrl: string) {
+  const base64 = dataUrl.split(",")[1] || "";
+  return Math.round((base64.length * 3) / 4);
+}
+
+function mimeFromDataUrl(dataUrl: string, fallback = "image/png") {
+  return dataUrl.match(/^data:([^;]+);base64,/)?.[1] || fallback;
+}
+
+function withImageExtension(name: string, mime: string) {
+  const ext = mime === "image/jpeg" ? "jpg" : mime.replace(/^image\//, "") || "png";
+  const base = name.replace(/\.(png|jpe?g|webp)$/i, "") || "reference";
+  return `${base}.${ext}`;
+}
+
+function renderReferenceForRequest(imageDataUrl: string, maxEdge: number, mime: string, quality: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      const longestEdge = Math.max(image.naturalWidth, image.naturalHeight);
+      const scale = longestEdge > 0 ? Math.min(1, maxEdge / longestEdge) : 1;
+      const width = Math.max(1, Math.round(image.naturalWidth * scale));
+      const height = Math.max(1, Math.round(image.naturalHeight * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d", { alpha: true });
+      if (!context) {
+        reject(new Error("无法压缩参考图"));
+        return;
+      }
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
+      context.drawImage(image, 0, 0, width, height);
+      resolve(canvas.toDataURL(mime, quality));
+    };
+    image.onerror = () => reject(new Error("无法读取参考图"));
+    image.src = imageDataUrl;
+  });
+}
+
+async function prepareReferenceForRequest(image: UploadedReference) {
+  const originalBytes = dataUrlByteLength(image.dataUrl);
+  const longestEdge = Math.max(image.width || 0, image.height || 0);
+  if (originalBytes <= MAX_REFERENCE_REQUEST_BYTES && longestEdge <= REFERENCE_REQUEST_MAX_EDGE) {
+    return {
+      name: image.name,
+      type: image.type,
+      dataUrl: image.dataUrl,
+      originalBytes,
+      requestBytes: originalBytes,
+      compressed: false,
+    };
+  }
+
+  let best = image.dataUrl;
+  const edges = [REFERENCE_REQUEST_MAX_EDGE, 1280, 1024];
+  const qualities = [0.82, 0.72, 0.62];
+  for (const edge of edges) {
+    for (const quality of qualities) {
+      try {
+        const next = await renderReferenceForRequest(image.dataUrl, edge, "image/webp", quality);
+        if (dataUrlByteLength(next) < dataUrlByteLength(best)) best = next;
+        if (dataUrlByteLength(next) <= MAX_REFERENCE_REQUEST_BYTES) {
+          const type = mimeFromDataUrl(next, "image/webp");
+          return {
+            name: withImageExtension(image.name, type),
+            type,
+            dataUrl: next,
+            originalBytes,
+            requestBytes: dataUrlByteLength(next),
+            compressed: true,
+          };
+        }
+      } catch {
+        // Try the next compression setting.
+      }
+    }
+  }
+
+  const type = mimeFromDataUrl(best, image.type);
+  return {
+    name: withImageExtension(image.name, type),
+    type,
+    dataUrl: best,
+    originalBytes,
+    requestBytes: dataUrlByteLength(best),
+    compressed: best !== image.dataUrl,
+  };
+}
+
+async function referenceImagesForRequest(images: UploadedReference[]) {
+  const prepared = await Promise.all(images.map(prepareReferenceForRequest));
+  return prepared.map((image) => ({
     name: image.name,
     type: image.type,
     dataUrl: image.dataUrl,
+  }));
+}
+
+function preparedReferenceMetaForLog(images: Array<{ name: string; type: string; dataUrl: string }>) {
+  return images.map((image, index) => ({
+    index,
+    name: image.name,
+    type: image.type,
+    requestBytes: dataUrlByteLength(image.dataUrl),
   }));
 }
 
@@ -1880,7 +1983,7 @@ async function createZipBlob(files: Array<{ name: string; blob: Blob; date?: num
 
 function serializeError(detail: ErrorDetail) {
   try {
-    return JSON.stringify(detail, null, 2);
+    return JSON.stringify(sanitizeClientLogValue(detail), null, 2);
   } catch {
     return String(detail);
   }
@@ -1958,6 +2061,26 @@ function safeLogError(error: unknown) {
     return sanitizeClientLogValue(JSON.parse(JSON.stringify(error)));
   } catch {
     return String(error);
+  }
+}
+
+async function readApiJson<T>(response: Response, endpoint: string): Promise<T> {
+  const contentType = response.headers.get("content-type") || "";
+  const text = await response.text();
+  if (!text.trim()) return {} as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    const looksHtml = /^\s*</.test(text);
+    throw {
+      status: response.status,
+      endpoint,
+      contentType,
+      error: looksHtml
+        ? "服务返回了 HTML，不是 JSON。线上通常是 /api 路由未命中、请求体过大、网关拦截或部署平台返回了错误页。"
+        : "服务返回了不可解析的 JSON。",
+      raw: truncateForLog(text, 1600),
+    };
   }
 }
 
@@ -2945,7 +3068,10 @@ export default function App() {
     const element = recordElementRefs.current.get(record.id);
     if (element) {
       element.scrollIntoView({ behavior: "smooth", block: "center" });
-    } else if (record.objectUrl) {
+      if (record.status === "error") {
+        window.setTimeout(() => previewCurrent(record), 220);
+      }
+    } else if (record.objectUrl || record.status === "error") {
       previewCurrent(record);
     }
     window.setTimeout(() => {
@@ -3213,7 +3339,7 @@ export default function App() {
           apiKey: config.apiKey,
         }),
       });
-      const payload = await response.json();
+      const payload = await readApiJson<{ ok?: boolean; models?: string[]; raw?: unknown; detail?: unknown }>(response, "/api/models");
       if (!response.ok || !payload.ok) {
         throw payload.detail || payload;
       }
@@ -3327,7 +3453,7 @@ export default function App() {
           apiKey: apiConfig.apiKey,
         }),
       });
-      const payload = await response.json();
+      const payload = await readApiJson<{ ok?: boolean; models?: string[]; raw?: unknown; detail?: unknown }>(response, "/api/models");
       if (!response.ok || !payload.ok) {
         throw payload.detail || payload;
       }
@@ -3398,18 +3524,28 @@ export default function App() {
 
   async function generateSingle(job: Job, config: ApiConfig) {
     const startedAt = Date.now();
-    const requestParamsForLog = imageRequestParamsForLog(job, config);
+    let requestParamsForLog: Record<string, unknown> = imageRequestParamsForLog(job, config);
     patchVisibleRecord(job.id, { status: "running", startedAt, durationMs: 0 });
-    pushLocalLog({
-      type: "image_generation",
-      level: "info",
-      title: `开始生成图片 #${job.index}/${job.total}`,
-      message: `模型 ${job.model}，参考图 ${job.referenceImages.length} 张。`,
-      endpoint: "/api/images/generate",
-      params: requestParamsForLog,
-    });
 
     try {
+      const requestReferenceImages = await referenceImagesForRequest(job.referenceImages);
+      requestParamsForLog = {
+        ...requestParamsForLog,
+        request: {
+          ...(requestParamsForLog.request as Record<string, unknown>),
+          preparedReferenceImages: preparedReferenceMetaForLog(requestReferenceImages),
+          preparedReferenceTotalBytes: requestReferenceImages.reduce((sum, image) => sum + dataUrlByteLength(image.dataUrl), 0),
+        },
+      };
+      pushLocalLog({
+        type: "image_generation",
+        level: "info",
+        title: `开始生成图片 #${job.index}/${job.total}`,
+        message: `模型 ${job.model}，参考图 ${job.referenceImages.length} 张。`,
+        endpoint: "/api/images/generate",
+        params: requestParamsForLog,
+      });
+
       const response = await fetch("/api/images/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3435,11 +3571,11 @@ export default function App() {
             agentName: job.agentName,
             agentScenario: job.agentScenario,
             promptVariant: job.promptVariant,
-            referenceImages: referenceImagesForRequest(job.referenceImages),
+            referenceImages: requestReferenceImages,
           },
         }),
       });
-      const payload = (await response.json()) as GenerateProxyResponse;
+      const payload = await readApiJson<GenerateProxyResponse>(response, "/api/images/generate");
       if (!response.ok || !payload.ok || !payload.images?.[0]?.dataUrl) {
         throw payload.detail && typeof payload.detail === "object"
           ? { ...payload.detail as Record<string, unknown>, requestId: payload.requestId }
@@ -3531,6 +3667,11 @@ export default function App() {
         requestId,
         durationMs,
         params: requestParamsForLog,
+        response: {
+          ok: false,
+          requestId,
+          detail: sanitizeClientLogValue(errorDetail),
+        },
         error: safeLogError(errorDetail),
       });
       patchVisibleRecord(job.id, { requestId, status: "error", errorDetail, startedAt, finishedAt, durationMs });
@@ -3680,7 +3821,7 @@ export default function App() {
         promptVariant: agentContext?.variant,
         }),
       });
-      const payload = await response.json();
+      const payload = await readApiJson<{ ok?: boolean; requestId?: string; analysis?: unknown; detail?: unknown }>(response, "/api/prompt/analyze");
       if (!response.ok || !payload.ok) {
         throw payload.detail || payload;
       }
@@ -4330,7 +4471,6 @@ export default function App() {
 
   function previewCurrent(item: Job | HistoryRecord) {
     const url = (item as Job).imageUrl || (item as HistoryRecord).objectUrl;
-    if (!url) return;
     setPreviewItem({
       id: item.id,
       requestId: item.requestId,
@@ -5539,10 +5679,13 @@ export default function App() {
         <ImagePreviewModal
           item={previewItem}
           onClose={() => setPreviewItem(null)}
-          onDownload={() => downloadUrl(
-            previewItem.url,
-            `${previewItem.model}-${previewItem.width || "image"}x${previewItem.height || "image"}-${previewItem.id}.${previewItem.params.outputFormat}`,
-          )}
+          onDownload={() => {
+            if (!previewItem.url) return;
+            downloadUrl(
+              previewItem.url,
+              `${previewItem.model}-${previewItem.width || "image"}x${previewItem.height || "image"}-${previewItem.id}.${previewItem.params.outputFormat}`,
+            );
+          }}
           onCopyPrompt={() => copyPrompt(previewItem.prompt)}
         />
       )}
@@ -6491,10 +6634,11 @@ const JobCard = memo(function JobCard({
           </div>
         )}
         {job.status === "error" && (
-          <div className="tile-state error">
+          <button type="button" className="tile-state tile-state-button error" onClick={onPreview} title="查看失败详情">
             <AlertCircle size={22} />
             <strong>生成失败</strong>
-          </div>
+            <span>查看详情</span>
+          </button>
         )}
         <div className="tile-index">#{job.index}</div>
         {storedReferenceImages.length > 0 && (
@@ -6530,9 +6674,9 @@ const JobCard = memo(function JobCard({
         )}
 
         {job.status === "error" && (
-          <div className="tile-error-line" title={serializeError(job.errorDetail)}>
+          <button type="button" className="tile-error-line" title={serializeError(job.errorDetail)} onClick={onPreview}>
             {formatError(job.errorDetail)}
-          </div>
+          </button>
         )}
 
         <div className="tile-bottom-line">
@@ -6549,6 +6693,11 @@ const JobCard = memo(function JobCard({
             {job.status === "success" && (
               <button type="button" className="icon-button" title="下载图片" onClick={onDownload}>
                 <Download size={16} />
+              </button>
+            )}
+            {job.status === "error" && (
+              <button type="button" className="icon-button" title="查看失败详情" onClick={onPreview}>
+                <AlertCircle size={16} />
               </button>
             )}
             {job.status === "error" && (
@@ -6892,6 +7041,7 @@ function ImagePreviewModal({
 }) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const previewClass = aspectClass(item.width, item.height, item.params.aspectRatio);
+  const hasImage = Boolean(item.url);
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -6906,19 +7056,28 @@ function ImagePreviewModal({
   }, [isFullscreen, onClose]);
 
   return (
-    <div className="preview-modal" role="dialog" aria-modal="true" aria-label="图片预览">
+    <div className="preview-modal" role="dialog" aria-modal="true" aria-label={hasImage ? "图片预览" : "失败详情"}>
       <button className="preview-backdrop" type="button" aria-label="关闭预览" onClick={onClose} />
       <div className={`preview-shell ${isFullscreen ? "is-fullscreen" : ""}`}>
-        <div className={`preview-stage ${previewClass}`}>
-          <button
-            type="button"
-            className="preview-image-frame"
-            title={isFullscreen ? "退出全屏查看" : "全屏查看图片"}
-            onClick={() => setIsFullscreen((value) => !value)}
-          >
-            <img src={item.url} alt="" />
-          </button>
-          {isFullscreen && (
+        <div className={`preview-stage ${hasImage ? previewClass : "is-error-detail"}`}>
+          {hasImage ? (
+            <button
+              type="button"
+              className="preview-image-frame"
+              title={isFullscreen ? "退出全屏查看" : "全屏查看图片"}
+              onClick={() => setIsFullscreen((value) => !value)}
+            >
+              <img src={item.url} alt="" />
+            </button>
+          ) : (
+            <div className="preview-error-frame">
+              <AlertCircle size={30} />
+              <strong>生成失败</strong>
+              <span>{formatError(item.errorDetail)}</span>
+              {item.requestId && <code>requestID: {item.requestId}</code>}
+            </div>
+          )}
+          {hasImage && isFullscreen && (
             <div className="preview-fullscreen-toolbar">
               <button type="button" className="icon-button" onClick={() => setIsFullscreen(false)} title="退出全屏">
                 <X size={17} />
@@ -6929,16 +7088,18 @@ function ImagePreviewModal({
         <aside className="preview-side">
           <div className="preview-head">
             <div>
-              <span className="eyebrow">预览</span>
+              <span className="eyebrow">{hasImage ? "预览" : "失败详情"}</span>
               <strong>{item.model}</strong>
             </div>
             <div className="preview-head-actions">
               <button type="button" className="icon-button" onClick={onCopyPrompt} title="复制提示词">
                 <Copy size={16} />
               </button>
-              <button type="button" className="icon-button" onClick={onDownload} title="下载图片">
-                <Download size={16} />
-              </button>
+              {hasImage && (
+                <button type="button" className="icon-button" onClick={onDownload} title="下载图片">
+                  <Download size={16} />
+                </button>
+              )}
               <button className="icon-button" type="button" onClick={onClose} title="关闭">
                 <X size={17} />
               </button>
@@ -6949,6 +7110,12 @@ function ImagePreviewModal({
             <div className="preview-agent-meta">
               <span>{item.agentName}</span>
               <small>{item.promptVariant ? PROMPT_VARIANT_LABELS[item.promptVariant] : "Agent"}</small>
+            </div>
+          )}
+          {!hasImage && (
+            <div className="preview-error-detail">
+              <strong>失败详情</strong>
+              <pre>{serializeError(item.errorDetail)}</pre>
             </div>
           )}
           <div className="preview-prompt">{item.prompt}</div>
