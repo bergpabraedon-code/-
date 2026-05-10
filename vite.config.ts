@@ -150,6 +150,113 @@ type AdminStore = {
   auditLogs: AdminAuditLog[];
 };
 
+type SquareFeedTab = "latest" | "hot" | "top_day" | "top_week" | "top_month";
+type SquareActionResult = "added" | "replaced" | "rejected" | "liked" | "unliked" | "noop";
+
+type SquareItem = {
+  id: string;
+  imageId: string;
+  requestId?: string;
+  thumbnailDataUrl: string;
+  imageHash: string;
+  prompt: string;
+  caption: string;
+  model: string;
+  params: Record<string, unknown>;
+  width?: number;
+  height?: number;
+  aspectRatio?: string;
+  sourceType: string;
+  reasonPlan?: unknown;
+  recommenderHash: string;
+  recommenderLabel: string;
+  pageLabel?: string;
+  active: boolean;
+  featured?: boolean;
+  likeCount: number;
+  qualityScore: number;
+  trustScore: number;
+  createdAt: number;
+  updatedAt: number;
+  replacedById?: string;
+};
+
+type SquareRecommendLog = {
+  id: string;
+  requestId: string;
+  apiKeyHash: string;
+  imageId?: string;
+  itemId?: string;
+  action: SquareActionResult;
+  result: "success" | "rejected" | "error";
+  reasonCode: string;
+  replacedItemId?: string;
+  remainingDailyQuota: number;
+  remainingShelfSlots: number;
+  ipHash: string;
+  uaHash: string;
+  promptHash?: string;
+  imageHash?: string;
+  sourceType?: string;
+  timestamp: number;
+};
+
+type SquareLikeLog = {
+  id: string;
+  requestId: string;
+  apiKeyHash: string;
+  itemId: string;
+  action: "like" | "unlike";
+  result: "success" | "rejected" | "noop" | "error";
+  reasonCode: string;
+  likeCount: number;
+  remainingLikeQuota: number;
+  ipHash: string;
+  uaHash: string;
+  timestamp: number;
+};
+
+type SquareLikeState = {
+  apiKeyHash: string;
+  itemId: string;
+  liked: boolean;
+  createdAt: number;
+  updatedAt: number;
+};
+
+type SquareQuotaDaily = {
+  apiKeyHash: string;
+  dateKey: string;
+  dailyRecommendUsed: number;
+  dailyLikeUsed: number;
+  firstSeenAt: number;
+  updatedAt: number;
+};
+
+type SquareModerationAudit = {
+  id: string;
+  requestId: string;
+  apiKeyHash: string;
+  itemId?: string;
+  imageId?: string;
+  event: string;
+  reasonCode: string;
+  severity: "low" | "medium" | "high";
+  ipHash: string;
+  uaHash: string;
+  timestamp: number;
+  detail?: unknown;
+};
+
+type SquareStore = {
+  items: SquareItem[];
+  recommendLogs: SquareRecommendLog[];
+  likeLogs: SquareLikeLog[];
+  likes: SquareLikeState[];
+  quotas: SquareQuotaDaily[];
+  moderationAudits: SquareModerationAudit[];
+};
+
 const API_TIMEOUT_MS = 300_000;
 const MAX_REQUEST_BYTES = 60 * 1024 * 1024;
 const DEFAULT_PROTOCOL: ImageProtocol = "custom-openai";
@@ -158,9 +265,16 @@ const SESSION_COOKIE = "image_studio_admin_session";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
 const DATA_DIR = join(process.cwd(), ".data");
 const ADMIN_STORE_PATH = join(DATA_DIR, "admin-store.json");
+const SQUARE_STORE_PATH = join(DATA_DIR, "square-store.json");
 const FRONTEND_VERSION_PATHS = ["src", "index.html", "package.json", "vite.config.ts"];
 const REFERENCE_TEMP_TTL_MS = 1000 * 60 * 10;
 const PUBLIC_REFERENCE_BASE_URL = "https://imagehub.taijiai.online";
+const SQUARE_TIME_ZONE = "Asia/Shanghai";
+const SQUARE_SHELF_LIMIT = 4;
+const SQUARE_DAILY_RECOMMEND_LIMIT = 10;
+const SQUARE_DAILY_LIKE_LIMIT = 10;
+const SQUARE_MAX_FEED_LIMIT = 20;
+const SQUARE_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
 const temporaryReferences = new Map<string, {
   bytes: Buffer;
@@ -318,6 +432,54 @@ function writeAdminStore(store: AdminStore) {
   writeFileSync(ADMIN_STORE_PATH, JSON.stringify(store, null, 2));
 }
 
+function emptySquareStore(): SquareStore {
+  return {
+    items: [],
+    recommendLogs: [],
+    likeLogs: [],
+    likes: [],
+    quotas: [],
+    moderationAudits: [],
+  };
+}
+
+function ensureSquareStore() {
+  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+  if (!existsSync(SQUARE_STORE_PATH)) {
+    writeFileSync(SQUARE_STORE_PATH, JSON.stringify(emptySquareStore(), null, 2));
+  }
+}
+
+function readSquareStore(): SquareStore {
+  ensureSquareStore();
+  try {
+    const parsed = JSON.parse(readFileSync(SQUARE_STORE_PATH, "utf8"));
+    return {
+      ...emptySquareStore(),
+      ...parsed,
+      items: Array.isArray(parsed.items) ? parsed.items : [],
+      recommendLogs: Array.isArray(parsed.recommendLogs) ? parsed.recommendLogs : [],
+      likeLogs: Array.isArray(parsed.likeLogs) ? parsed.likeLogs : [],
+      likes: Array.isArray(parsed.likes) ? parsed.likes : [],
+      quotas: Array.isArray(parsed.quotas) ? parsed.quotas : [],
+      moderationAudits: Array.isArray(parsed.moderationAudits) ? parsed.moderationAudits : [],
+    };
+  } catch {
+    return emptySquareStore();
+  }
+}
+
+function writeSquareStore(store: SquareStore) {
+  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+  store.items = store.items.slice(0, 2500);
+  store.recommendLogs = store.recommendLogs.slice(0, 5000);
+  store.likeLogs = store.likeLogs.slice(0, 8000);
+  store.likes = store.likes.slice(0, 12000);
+  store.quotas = store.quotas.slice(0, 5000);
+  store.moderationAudits = store.moderationAudits.slice(0, 5000);
+  writeFileSync(SQUARE_STORE_PATH, JSON.stringify(store, null, 2));
+}
+
 function appendAuditLog(username: string, action: string, detail?: string) {
   const store = readAdminStore();
   store.auditLogs.unshift({
@@ -365,6 +527,75 @@ function clearSessionCookie(res: ServerResponse) {
 function hashClientIp(req: IncomingMessage) {
   const ip = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "");
   return createHash("sha256").update(ip).digest("hex").slice(0, 16);
+}
+
+function hashText(value: unknown, length = 32) {
+  return createHash("sha256").update(String(value ?? "")).digest("hex").slice(0, length);
+}
+
+function hashApiKey(apiKey: string) {
+  return createHash("sha256").update(apiKey.trim()).digest("hex");
+}
+
+function squareDayKey(value = Date.now()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: SQUARE_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(value));
+  const record = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${record.year}-${record.month}-${record.day}`;
+}
+
+function getSquareQuota(store: SquareStore, apiKeyHash: string, dateKey = squareDayKey()) {
+  let quota = store.quotas.find((item) => item.apiKeyHash === apiKeyHash && item.dateKey === dateKey);
+  if (!quota) {
+    const now = Date.now();
+    quota = {
+      apiKeyHash,
+      dateKey,
+      dailyRecommendUsed: 0,
+      dailyLikeUsed: 0,
+      firstSeenAt: now,
+      updatedAt: now,
+    };
+    store.quotas.unshift(quota);
+  }
+  return quota;
+}
+
+function squareRemainingRecommendQuota(quota: SquareQuotaDaily) {
+  return Math.max(0, SQUARE_DAILY_RECOMMEND_LIMIT - quota.dailyRecommendUsed);
+}
+
+function squareRemainingLikeQuota(quota: SquareQuotaDaily) {
+  return Math.max(0, SQUARE_DAILY_LIKE_LIMIT - quota.dailyLikeUsed);
+}
+
+function squareClientMeta(req: IncomingMessage) {
+  return {
+    ipHash: hashClientIp(req),
+    uaHash: hashText(req.headers["user-agent"] || "", 16),
+  };
+}
+
+function getSquareAdminAuth(req: IncomingMessage): { ok: true; user: AdminUser } | { ok: false; status: number; error: string; mustChangePassword?: boolean } {
+  const session = getAdminSession(req);
+  const adminStore = readAdminStore();
+  const user = session ? adminStore.admins.find((admin) => admin.username === session.username) : undefined;
+  if (!session || !user) {
+    return { ok: false, status: 401, error: "未登录" };
+  }
+  if (user.mustChangePassword) {
+    return { ok: false, status: 403, error: "首次登录必须修改密码", mustChangePassword: true };
+  }
+  return { ok: true, user };
+}
+
+function squareItemForExport(item: SquareItem) {
+  const { thumbnailDataUrl, ...safeItem } = item;
+  return safeItem;
 }
 
 function truncateText(value: unknown, max = 2000) {
@@ -573,6 +804,167 @@ function getProtocol(value: unknown): ImageProtocol {
   return typeof value === "string" && PROTOCOLS.includes(value as ImageProtocol)
     ? (value as ImageProtocol)
     : DEFAULT_PROTOCOL;
+}
+
+function getRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function getNestedString(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function getNestedNumber(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function imageBytesFromDataUrl(dataUrl: string) {
+  const base64 = dataUrl.match(/^data:[^;]+;base64,(.*)$/)?.[1] || dataUrl;
+  return Math.round((base64.replace(/\s+/g, "").length * 3) / 4);
+}
+
+function hashImageDataUrl(dataUrl: string) {
+  const base64 = dataUrl.match(/^data:[^;]+;base64,(.*)$/)?.[1] || dataUrl;
+  return createHash("sha256").update(base64.replace(/\s+/g, "")).digest("hex");
+}
+
+function normalizeSquareFeedTab(value: string | null): SquareFeedTab {
+  if (value === "hot" || value === "top_day" || value === "top_week" || value === "top_month") return value;
+  return "latest";
+}
+
+function squareCursorOffset(value: string | null) {
+  if (!value) return 0;
+  const parsedDirect = Number(value);
+  if (Number.isFinite(parsedDirect) && parsedDirect >= 0) return Math.floor(parsedDirect);
+  try {
+    const decoded = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    const offset = typeof decoded.offset === "number" ? decoded.offset : 0;
+    return Number.isFinite(offset) && offset >= 0 ? Math.floor(offset) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function squareNextCursor(offset: number) {
+  return Buffer.from(JSON.stringify({ offset }), "utf8").toString("base64url");
+}
+
+function squareActiveItems(store: SquareStore) {
+  return store.items.filter((item) => item.active !== false);
+}
+
+function squareShelfCount(store: SquareStore, apiKeyHash: string) {
+  return squareActiveItems(store).filter((item) => item.recommenderHash === apiKeyHash).length;
+}
+
+function squareQualityScore(width?: number, height?: number, prompt = "") {
+  const longest = Math.max(width || 0, height || 0);
+  const dimensionScore = longest >= 1024 ? 86 : longest >= 768 ? 74 : 62;
+  const promptScore = prompt.trim().length >= 20 ? 82 : 68;
+  return Math.round(dimensionScore * 0.72 + promptScore * 0.28);
+}
+
+function squareRankScore(item: SquareItem, tab: SquareFeedTab, now = Date.now()) {
+  const periodMs = tab === "top_day"
+    ? 24 * 60 * 60 * 1000
+    : tab === "top_week"
+      ? 7 * 24 * 60 * 60 * 1000
+      : 30 * 24 * 60 * 60 * 1000;
+  const hotPeriodMs = tab === "hot" ? 3 * 24 * 60 * 60 * 1000 : periodMs;
+  const ageMs = Math.max(0, now - item.createdAt);
+  const recencyScore = Math.max(0, Math.round(100 * Math.exp(-ageMs / hotPeriodMs)));
+  const likeScore = Math.min(100, Math.round(Math.log1p(item.likeCount || 0) * 32));
+  const qualityScore = Math.max(0, Math.min(100, item.qualityScore || 70));
+  const trustScore = Math.max(0, Math.min(100, item.trustScore || 70));
+  const manualBoost = item.featured ? 8 : 0;
+  return Math.round((recencyScore * 0.45 + likeScore * 0.35 + qualityScore * 0.15 + trustScore * 0.05 + manualBoost) * 100) / 100;
+}
+
+function sortSquareItems(items: SquareItem[], tab: SquareFeedTab) {
+  const now = Date.now();
+  if (tab === "latest") return [...items].sort((a, b) => b.createdAt - a.createdAt);
+  const periodMs = tab === "top_day"
+    ? 24 * 60 * 60 * 1000
+    : tab === "top_week"
+      ? 7 * 24 * 60 * 60 * 1000
+      : tab === "top_month"
+        ? 30 * 24 * 60 * 60 * 1000
+        : 0;
+  const scoped = periodMs > 0
+    ? items.filter((item) => item.createdAt >= now - periodMs)
+    : items;
+  return [...scoped].sort((a, b) => {
+    const scoreDiff = squareRankScore(b, tab, now) - squareRankScore(a, tab, now);
+    return scoreDiff || b.createdAt - a.createdAt;
+  });
+}
+
+function isLikedBy(store: SquareStore, apiKeyHash: string, itemId: string) {
+  return Boolean(store.likes.find((like) => like.apiKeyHash === apiKeyHash && like.itemId === itemId && like.liked));
+}
+
+function squareFeedItem(item: SquareItem, store: SquareStore, tab: SquareFeedTab, viewerApiKeyHash = "") {
+  return {
+    id: item.id,
+    imageId: item.imageId,
+    requestId: item.requestId,
+    thumbnailDataUrl: item.thumbnailDataUrl,
+    prompt: item.prompt,
+    caption: item.caption,
+    model: item.model,
+    params: item.params,
+    width: item.width,
+    height: item.height,
+    aspectRatio: item.aspectRatio,
+    sourceType: item.sourceType,
+    reasonPlan: item.reasonPlan,
+    recommenderLabel: item.recommenderLabel,
+    pageLabel: item.pageLabel,
+    likeCount: item.likeCount || 0,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    rankScore: squareRankScore(item, tab),
+    likedByRequester: viewerApiKeyHash ? isLikedBy(store, viewerApiKeyHash, item.id) : false,
+  };
+}
+
+function appendSquareRecommendLog(store: SquareStore, log: Omit<SquareRecommendLog, "id" | "timestamp">) {
+  store.recommendLogs.unshift({
+    id: randomUUID(),
+    timestamp: Date.now(),
+    ...log,
+  });
+}
+
+function appendSquareLikeLog(store: SquareStore, log: Omit<SquareLikeLog, "id" | "timestamp">) {
+  store.likeLogs.unshift({
+    id: randomUUID(),
+    timestamp: Date.now(),
+    ...log,
+  });
+}
+
+function appendSquareModerationAudit(store: SquareStore, audit: Omit<SquareModerationAudit, "id" | "timestamp">) {
+  store.moderationAudits.unshift({
+    id: randomUUID(),
+    timestamp: Date.now(),
+    ...audit,
+  });
+}
+
+function moderationReasonForSquareText(prompt: string, caption = "") {
+  const text = `${prompt}\n${caption}`.toLowerCase();
+  if (/(nsfw|nude|porn|sex|色情|裸露|裸体|成人内容)/i.test(text)) return "blocked_sensitive_content";
+  if (prompt.length > 8000 || caption.length > 1000) return "abnormal_text_length";
+  return "";
+}
+
+function recentSquareRecommendCount(store: SquareStore, apiKeyHash: string, withinMs: number) {
+  const threshold = Date.now() - withinMs;
+  return store.recommendLogs.filter((log) => log.apiKeyHash === apiKeyHash && log.timestamp >= threshold).length;
 }
 
 function endpoint(baseUrl: string, path: string) {
@@ -797,14 +1189,14 @@ const SIZE_BY_RATIO: Record<string, string> = {
   "1:1": "1024x1024",
   "4:5": "1024x1280",
   "5:4": "1280x1024",
-  "3:4": "1024x1365",
-  "4:3": "1365x1024",
+  "3:4": "1152x1536",
+  "4:3": "1536x1152",
   "2:3": "1024x1536",
   "3:2": "1536x1024",
   "9:16": "1024x1792",
   "16:9": "1792x1024",
-  "21:9": "1792x768",
-  "9:21": "768x1792",
+  "21:9": "2016x864",
+  "9:21": "864x2016",
 };
 
 const RESOLUTION_MULTIPLIER: Record<string, number> = {
@@ -826,7 +1218,9 @@ function scaleSize(size: string, resolution = "1K") {
 }
 
 function imageSizeForProtocol(request: GenerateRequest, protocol: ImageProtocol) {
-  if (protocol === "custom-openai" && isImage2Model(request.model) && request.aspectRatio) return request.aspectRatio;
+  if (isImage2Model(request.model) && request.aspectRatio) {
+    return SIZE_BY_RATIO[request.aspectRatio] || SIZE_BY_RATIO["1:1"];
+  }
   return request.aspectRatio
     ? scaleSize(SIZE_BY_RATIO[request.aspectRatio] || SIZE_BY_RATIO["1:1"], request.resolution)
     : request.size || "auto";
@@ -838,7 +1232,9 @@ function isImage2Model(model = "") {
 }
 
 function imageGenerationSize(request: GenerateRequest) {
-  if (isImage2Model(request.model) && request.aspectRatio) return request.aspectRatio;
+  if (isImage2Model(request.model) && request.aspectRatio) {
+    return SIZE_BY_RATIO[request.aspectRatio] || SIZE_BY_RATIO["1:1"];
+  }
   return request.size || request.aspectRatio || "auto";
 }
 
@@ -1552,33 +1948,12 @@ function buildLocalAgentModeAnalysis(body: ProxyBody): AgentModeAnalysisResult {
   };
 }
 
-function chatCompletionMessageText(value: unknown) {
-  const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
-  const choices = Array.isArray(record.choices) ? record.choices as Array<Record<string, unknown>> : [];
-  const message = choices[0]?.message;
-  if (!message || typeof message !== "object") return "";
-  const content = (message as Record<string, unknown>).content;
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((item) => {
-        if (typeof item === "string") return item;
-        if (!item || typeof item !== "object") return "";
-        return typeof (item as Record<string, unknown>).text === "string"
-          ? (item as Record<string, unknown>).text as string
-          : "";
-      })
-      .join("\n")
-      .trim();
-  }
-  return "";
-}
-
 async function analyzeAgentModeWithGpt(
   baseUrl: string,
   apiKey: string,
   body: ProxyBody,
   requestId?: string,
+  callbacks: AnalyzeStreamCallbacks = {},
 ) {
   const analysisModel = getString(body, "analysisModel");
   const prompt = getString(body, "prompt");
@@ -1620,6 +1995,7 @@ async function analyzeAgentModeWithGpt(
     ],
     temperature: 0.1,
     response_format: { type: "json_object" },
+    stream: true,
   };
   if (requestId) {
     updateRequestLog(requestId, {
@@ -1633,11 +2009,13 @@ async function analyzeAgentModeWithGpt(
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
+      Accept: "text/event-stream",
     },
     body: JSON.stringify(upstreamPayload),
   }, 60_000);
-  const bodyText = await response.text();
+  callbacks.onUpstreamConnected?.(response.status);
   if (!response.ok) {
+    const bodyText = await response.text();
     const detail = detailFromUpstream(response.status, bodyText);
     if (requestId) {
       updateRequestLog(requestId, {
@@ -1651,14 +2029,94 @@ async function analyzeAgentModeWithGpt(
     }
     throw detail;
   }
-
-  const parsed = parseMaybeJson(bodyText);
-  const content = chatCompletionMessageText(parsed);
-  if (!content) {
-    throw new Error("分析模型没有返回有效内容");
+  if (!response.body) {
+    throw new Error("上游返回空响应体");
   }
-  const analysis = parseMaybeJson(extractJsonObject(content));
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let accumulated = "";
+  let firstByteReported = false;
+  let finishReason: string | undefined;
+
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!firstByteReported) {
+        callbacks.onFirstByte?.();
+        firstByteReported = true;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const rawLine of lines) {
+        const line = rawLine.replace(/\r$/, "");
+        if (!line.startsWith("data:")) continue;
+        const dataStr = line.slice(5).trim();
+        if (!dataStr || dataStr === "[DONE]") continue;
+        let chunk: unknown;
+        try {
+          chunk = JSON.parse(dataStr);
+        } catch {
+          continue;
+        }
+        const choice = chunk && typeof chunk === "object"
+          ? ((chunk as { choices?: unknown }).choices as Array<Record<string, unknown>> | undefined)?.[0]
+          : undefined;
+        const delta = choice && typeof choice === "object" ? (choice.delta as Record<string, unknown> | undefined) : undefined;
+        const deltaContent = delta && typeof delta.content === "string" ? delta.content : "";
+        if (deltaContent) {
+          accumulated += deltaContent;
+          callbacks.onChunk?.(deltaContent, accumulated);
+        }
+        if (typeof choice?.finish_reason === "string") {
+          finishReason = choice.finish_reason as string;
+        }
+      }
+    }
+    if (buffer.startsWith("data:")) {
+      const tail = buffer.slice(5).trim();
+      if (tail && tail !== "[DONE]") {
+        try {
+          const chunk = JSON.parse(tail);
+          const deltaContent = (chunk?.choices?.[0]?.delta?.content as string) || "";
+          if (deltaContent) {
+            accumulated += deltaContent;
+            callbacks.onChunk?.(deltaContent, accumulated);
+          }
+        } catch {
+          // ignore trailing partial
+        }
+      }
+    }
+  } finally {
+    try { reader.releaseLock(); } catch {}
+  }
+
+  if (!accumulated.trim()) {
+    if (requestId) {
+      updateRequestLog(requestId, {
+        responseBody: sanitizeForLog({ ok: false, status: response.status, error: "Agent 分析 stream 没有返回任何内容", finishReason }),
+      });
+    }
+    throw new Error("分析模型返回空内容");
+  }
+
+  const analysis = parseMaybeJson(extractJsonObject(accumulated));
   if (!analysis || typeof analysis !== "object") {
+    if (requestId) {
+      updateRequestLog(requestId, {
+        responseBody: sanitizeForLog({
+          ok: false,
+          status: response.status,
+          error: "Agent 分析模型没有返回可解析的 JSON",
+          finishReason,
+          rawContent: truncateText(accumulated, 4000),
+        }),
+      });
+    }
     throw new Error("Agent 分析结果不是有效 JSON");
   }
   const normalized = normalizeAgentModeAnalysisPayload(analysis, localFallback, analysisModel);
@@ -1667,7 +2125,8 @@ async function analyzeAgentModeWithGpt(
       responseBody: sanitizeForLog({
         ok: true,
         status: response.status,
-        rawContent: truncateText(content, 4000),
+        finishReason,
+        rawContent: truncateText(accumulated, 4000),
         analysis: normalized,
       }),
     });
@@ -2043,8 +2502,8 @@ async function generateOpenAiCompatible(baseUrl: string, apiKey: string, request
   if (requestSize && requestSize !== "auto") payload.size = requestSize;
   if (request.quality && request.quality !== "auto") payload.quality = request.quality;
   if (outputFormat && outputFormat !== "png") payload.output_format = outputFormat;
-  if (request.aspectRatio && protocol === "custom-openai") payload.aspect_ratio = request.aspectRatio;
-  if (protocol === "custom-openai" && isImage2Model(request.model) && request.resolution && request.resolution !== "1K") {
+  if (request.aspectRatio && protocol === "custom-openai" && !isImage2Model(request.model)) payload.aspect_ratio = request.aspectRatio;
+  if (protocol === "custom-openai" && !isImage2Model(request.model) && request.resolution && request.resolution !== "1K") {
     payload.resolution = request.resolution;
   }
   if (request.seed) payload.seed = Number.isFinite(Number(request.seed)) ? Number(request.seed) : request.seed;
@@ -2318,11 +2777,563 @@ async function loadUpstreamModels(protocol: ImageProtocol, baseUrl: string, apiK
   return { models: models.length > 0 ? models : DEFAULT_MODELS[protocol], raw: payload };
 }
 
+async function handleSquareFeed(req: IncomingMessage, res: ServerResponse) {
+  if (req.method !== "GET") {
+    sendJson(res, 405, { ok: false, error: "Method not allowed" });
+    return;
+  }
+  const url = new URL(req.url || "/", "http://localhost");
+  const tab = normalizeSquareFeedTab(url.searchParams.get("tab"));
+  const limit = Math.max(1, Math.min(SQUARE_MAX_FEED_LIMIT, Number(url.searchParams.get("limit")) || SQUARE_MAX_FEED_LIMIT));
+  const offset = squareCursorOffset(url.searchParams.get("cursor"));
+  const apiKey = (url.searchParams.get("apiKey") || String(req.headers["x-imagehub-api-key"] || "")).trim();
+  const viewerHash = apiKey ? hashApiKey(apiKey) : "";
+  const store = readSquareStore();
+  const sorted = sortSquareItems(squareActiveItems(store), tab);
+  const items = sorted.slice(offset, offset + limit);
+  const nextOffset = offset + items.length;
+  sendJson(res, 200, {
+    ok: true,
+    tab,
+    items: items.map((item) => squareFeedItem(item, store, tab, viewerHash)),
+    nextCursor: nextOffset < sorted.length ? squareNextCursor(nextOffset) : "",
+    hasMore: nextOffset < sorted.length,
+  });
+}
+
+async function handleSquareQuota(req: IncomingMessage, res: ServerResponse) {
+  if (req.method !== "GET") {
+    sendJson(res, 405, { ok: false, error: "Method not allowed" });
+    return;
+  }
+  const url = new URL(req.url || "/", "http://localhost");
+  const apiKey = (url.searchParams.get("apiKey") || String(req.headers["x-imagehub-api-key"] || "")).trim();
+  if (!apiKey) {
+    sendJson(res, 401, { ok: false, error: "推荐和点赞需要先配置 API Key" });
+    return;
+  }
+  const apiKeyHash = hashApiKey(apiKey);
+  const store = readSquareStore();
+  const quota = getSquareQuota(store, apiKeyHash);
+  writeSquareStore(store);
+  sendJson(res, 200, {
+    ok: true,
+    dailyRecommendUsed: quota.dailyRecommendUsed,
+    dailyRecommendLeft: squareRemainingRecommendQuota(quota),
+    dailyLikeUsed: quota.dailyLikeUsed,
+    dailyLikeLeft: squareRemainingLikeQuota(quota),
+    shelfCount: squareShelfCount(store, apiKeyHash),
+    shelfLimit: SQUARE_SHELF_LIMIT,
+    dayKey: quota.dateKey,
+  });
+}
+
+async function handleSquareRecommend(req: IncomingMessage, res: ServerResponse) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { ok: false, error: "Method not allowed" });
+    return;
+  }
+  const requestId = randomUUID();
+  const clientMeta = squareClientMeta(req);
+  try {
+    const body = await readJsonBody(req);
+    const apiKey = getString(body, "apiKey");
+    if (!apiKey) {
+      sendJson(res, 401, { ok: false, status: "rejected", action: "rejected", error: "推荐到广场需要先配置 API Key" });
+      return;
+    }
+    const apiKeyHash = hashApiKey(apiKey);
+    const store = readSquareStore();
+    const quota = getSquareQuota(store, apiKeyHash);
+    const reject = (status: number, reasonCode: string, error: string, extra: Partial<SquareRecommendLog> = {}) => {
+      appendSquareRecommendLog(store, {
+        requestId,
+        apiKeyHash,
+        action: "rejected",
+        result: "rejected",
+        reasonCode,
+        remainingDailyQuota: squareRemainingRecommendQuota(quota),
+        remainingShelfSlots: Math.max(0, SQUARE_SHELF_LIMIT - squareShelfCount(store, apiKeyHash)),
+        ...clientMeta,
+        ...extra,
+      });
+      writeSquareStore(store);
+      sendJson(res, status, {
+        ok: false,
+        status: "rejected",
+        action: "rejected",
+        reasonCode,
+        error,
+        remainingDailyQuota: squareRemainingRecommendQuota(quota),
+        remainingShelfSlots: Math.max(0, SQUARE_SHELF_LIMIT - squareShelfCount(store, apiKeyHash)),
+      });
+    };
+
+    if (quota.dailyRecommendUsed >= SQUARE_DAILY_RECOMMEND_LIMIT) {
+      reject(429, "daily_recommend_quota_exceeded", "今日推荐额度已满");
+      return;
+    }
+    quota.dailyRecommendUsed += 1;
+    quota.updatedAt = Date.now();
+
+    const sourceImageMeta = getRecord(body.sourceImageMeta);
+    const params = getRecord(body.params);
+    const thumbnailDataUrl = getString(body, "thumbnailDataUrl")
+      || getNestedString(sourceImageMeta, "thumbnailDataUrl")
+      || getNestedString(sourceImageMeta, "imageDataUrl");
+    const imageId = getString(body, "imageId") || getNestedString(sourceImageMeta, "imageId") || randomUUID();
+    const prompt = getString(body, "prompt");
+    const caption = getString(body, "caption") || truncateText(prompt.replace(/\s+/g, " "), 140);
+    const sourceType = getString(body, "sourceType") || "local_history";
+    const model = getString(body, "model") || getNestedString(sourceImageMeta, "model") || "unknown";
+    const width = getNumber(body.width) || getNestedNumber(sourceImageMeta, "width");
+    const height = getNumber(body.height) || getNestedNumber(sourceImageMeta, "height");
+    const reasonPlan = body.reasonPlan;
+    const promptHash = prompt ? hashText(prompt, 32) : undefined;
+
+    if (!thumbnailDataUrl) {
+      reject(400, "missing_square_thumbnail", "缺少广场展示图", { imageId, promptHash, sourceType });
+      return;
+    }
+    if (!/^data:image\/[a-zA-Z+.-]+;base64,/.test(thumbnailDataUrl)) {
+      reject(400, "invalid_square_thumbnail", "广场展示图格式无效", { imageId, promptHash, sourceType });
+      return;
+    }
+    const thumbnailBytes = imageBytesFromDataUrl(thumbnailDataUrl);
+    if (thumbnailBytes <= 0 || thumbnailBytes > SQUARE_MAX_IMAGE_BYTES) {
+      reject(413, "square_thumbnail_too_large", "广场展示图过大，请压缩后再推荐", { imageId, promptHash, sourceType });
+      return;
+    }
+    if (!prompt) {
+      reject(400, "missing_prompt", "推荐到广场需要保留提示词", { imageId, sourceType });
+      return;
+    }
+    const moderationReason = moderationReasonForSquareText(prompt, caption);
+    if (moderationReason) {
+      appendSquareModerationAudit(store, {
+        requestId,
+        apiKeyHash,
+        imageId,
+        event: "recommend_rejected",
+        reasonCode: moderationReason,
+        severity: "high",
+        ...clientMeta,
+        detail: sanitizeForLog({ prompt, caption }),
+      });
+      reject(422, moderationReason, "内容需要人工复核，暂不进入广场", { imageId, promptHash, sourceType });
+      return;
+    }
+    if (recentSquareRecommendCount(store, apiKeyHash, 60_000) >= 8) {
+      appendSquareModerationAudit(store, {
+        requestId,
+        apiKeyHash,
+        imageId,
+        event: "recommend_backoff",
+        reasonCode: "rapid_submit_backoff",
+        severity: "medium",
+        ...clientMeta,
+      });
+      reject(429, "rapid_submit_backoff", "提交过于频繁，请稍后再试", { imageId, promptHash, sourceType });
+      return;
+    }
+
+    const imageHash = hashImageDataUrl(thumbnailDataUrl);
+    const duplicatedBySelf = squareActiveItems(store).find((item) => item.recommenderHash === apiKeyHash && item.imageHash === imageHash);
+    if (duplicatedBySelf) {
+      appendSquareModerationAudit(store, {
+        requestId,
+        apiKeyHash,
+        itemId: duplicatedBySelf.id,
+        imageId,
+        event: "duplicate_content",
+        reasonCode: "duplicate_active_item",
+        severity: "low",
+        ...clientMeta,
+      });
+      reject(409, "duplicate_active_item", "这张图已经在你的广场展示位中", { imageId, itemId: duplicatedBySelf.id, imageHash, promptHash, sourceType });
+      return;
+    }
+
+    const now = Date.now();
+    const activeByKey = squareActiveItems(store)
+      .filter((item) => item.recommenderHash === apiKeyHash)
+      .sort((a, b) => a.createdAt - b.createdAt);
+    const action: "added" | "replaced" = activeByKey.length >= SQUARE_SHELF_LIMIT ? "replaced" : "added";
+    const replaced = action === "replaced" ? activeByKey[0] : undefined;
+    const itemId = randomUUID();
+    if (replaced) {
+      replaced.active = false;
+      replaced.replacedById = itemId;
+      replaced.updatedAt = now;
+    }
+
+    const item: SquareItem = {
+      id: itemId,
+      imageId,
+      requestId: getNestedString(sourceImageMeta, "requestId") || undefined,
+      thumbnailDataUrl,
+      imageHash,
+      prompt: truncateText(prompt, 4000),
+      caption: truncateText(caption || prompt, 240),
+      model: truncateText(model, 240),
+      params: sanitizeForLog(params) as Record<string, unknown>,
+      width,
+      height,
+      aspectRatio: getNestedString(sourceImageMeta, "aspectRatio") || (typeof params.aspectRatio === "string" ? params.aspectRatio : undefined),
+      sourceType,
+      reasonPlan: sanitizeForLog(reasonPlan),
+      recommenderHash: apiKeyHash,
+      recommenderLabel: `创作者 ${apiKeyHash.slice(0, 6)}`,
+      pageLabel: getNestedString(sourceImageMeta, "pageLabel") || undefined,
+      active: true,
+      featured: Boolean(body.featured),
+      likeCount: 0,
+      qualityScore: squareQualityScore(width, height, prompt),
+      trustScore: 72,
+      createdAt: now,
+      updatedAt: now,
+    };
+    store.items.unshift(item);
+
+    const sameImageFromOthers = squareActiveItems(store).find((candidate) => candidate.id !== item.id && candidate.imageHash === imageHash);
+    if (sameImageFromOthers) {
+      appendSquareModerationAudit(store, {
+        requestId,
+        apiKeyHash,
+        itemId,
+        imageId,
+        event: "duplicate_content_warning",
+        reasonCode: "same_image_hash_seen",
+        severity: "low",
+        ...clientMeta,
+      });
+    }
+
+    appendSquareRecommendLog(store, {
+      requestId,
+      apiKeyHash,
+      imageId,
+      itemId,
+      action,
+      result: "success",
+      reasonCode: action === "replaced" ? "shelf_limit_replaced_oldest" : "added_to_square",
+      replacedItemId: replaced?.id,
+      remainingDailyQuota: squareRemainingRecommendQuota(quota),
+      remainingShelfSlots: Math.max(0, SQUARE_SHELF_LIMIT - squareShelfCount(store, apiKeyHash)),
+      ...clientMeta,
+      promptHash,
+      imageHash,
+      sourceType,
+    });
+    writeSquareStore(store);
+    sendJson(res, 200, {
+      ok: true,
+      status: "accepted",
+      action,
+      item: squareFeedItem(item, store, "latest", apiKeyHash),
+      remainingDailyQuota: squareRemainingRecommendQuota(quota),
+      remainingShelfSlots: Math.max(0, SQUARE_SHELF_LIMIT - squareShelfCount(store, apiKeyHash)),
+      replacedItemId: replaced?.id,
+    });
+  } catch (error) {
+    sendJson(res, 500, { ok: false, requestId, error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+async function handleSquareLike(req: IncomingMessage, res: ServerResponse) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { ok: false, error: "Method not allowed" });
+    return;
+  }
+  const requestId = randomUUID();
+  const clientMeta = squareClientMeta(req);
+  try {
+    const body = await readJsonBody(req);
+    const apiKey = getString(body, "apiKey");
+    const itemId = getString(body, "itemId");
+    const action = getString(body, "action") === "unlike" ? "unlike" : "like";
+    if (!apiKey) {
+      sendJson(res, 401, { ok: false, status: "rejected", error: "点赞需要先配置 API Key" });
+      return;
+    }
+    const apiKeyHash = hashApiKey(apiKey);
+    const store = readSquareStore();
+    const quota = getSquareQuota(store, apiKeyHash);
+    const item = store.items.find((candidate) => candidate.id === itemId && candidate.active !== false);
+    if (!item) {
+      sendJson(res, 404, { ok: false, status: "rejected", error: "广场作品不存在或已被替换" });
+      return;
+    }
+    const existing = store.likes.find((like) => like.apiKeyHash === apiKeyHash && like.itemId === itemId);
+    const log = (result: SquareLikeLog["result"], reasonCode: string) => {
+      appendSquareLikeLog(store, {
+        requestId,
+        apiKeyHash,
+        itemId,
+        action,
+        result,
+        reasonCode,
+        likeCount: item.likeCount || 0,
+        remainingLikeQuota: squareRemainingLikeQuota(quota),
+        ...clientMeta,
+      });
+    };
+
+    if (action === "like") {
+      if (existing?.liked) {
+        log("noop", "already_liked");
+        writeSquareStore(store);
+        sendJson(res, 200, {
+          ok: true,
+          status: "liked",
+          action: "noop",
+          likeCount: item.likeCount || 0,
+          remainingLikeQuota: squareRemainingLikeQuota(quota),
+        });
+        return;
+      }
+      if (quota.dailyLikeUsed >= SQUARE_DAILY_LIKE_LIMIT) {
+        log("rejected", "daily_like_quota_exceeded");
+        writeSquareStore(store);
+        sendJson(res, 429, {
+          ok: false,
+          status: "rejected",
+          action: "rejected",
+          reasonCode: "daily_like_quota_exceeded",
+          error: "今日点赞额度已满",
+          likeCount: item.likeCount || 0,
+          remainingLikeQuota: 0,
+        });
+        return;
+      }
+      quota.dailyLikeUsed += 1;
+      quota.updatedAt = Date.now();
+      if (existing) {
+        existing.liked = true;
+        existing.updatedAt = Date.now();
+      } else {
+        store.likes.unshift({
+          apiKeyHash,
+          itemId,
+          liked: true,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+      }
+      item.likeCount = Math.max(0, (item.likeCount || 0) + 1);
+      item.updatedAt = Date.now();
+      log("success", "liked");
+      writeSquareStore(store);
+      sendJson(res, 200, {
+        ok: true,
+        status: "liked",
+        action: "liked",
+        likeCount: item.likeCount,
+        remainingLikeQuota: squareRemainingLikeQuota(quota),
+      });
+      return;
+    }
+
+    let didUnlike = false;
+    if (existing?.liked) {
+      existing.liked = false;
+      existing.updatedAt = Date.now();
+      item.likeCount = Math.max(0, (item.likeCount || 0) - 1);
+      item.updatedAt = Date.now();
+      log("success", "unliked");
+      didUnlike = true;
+    } else {
+      if (!existing) {
+        store.likes.unshift({
+          apiKeyHash,
+          itemId,
+          liked: false,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+      }
+      log("noop", "already_unliked");
+    }
+    writeSquareStore(store);
+    sendJson(res, 200, {
+      ok: true,
+      status: "unliked",
+      action: didUnlike ? "unliked" : "noop",
+      likeCount: item.likeCount || 0,
+      remainingLikeQuota: squareRemainingLikeQuota(quota),
+    });
+  } catch (error) {
+    sendJson(res, 500, { ok: false, requestId, error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+async function handleSquareAdminOverview(req: IncomingMessage, res: ServerResponse) {
+  if (req.method !== "GET") {
+    sendJson(res, 405, { ok: false, error: "Method not allowed" });
+    return;
+  }
+  const auth = getSquareAdminAuth(req);
+  if (!auth.ok) {
+    sendJson(res, auth.status, { ok: false, error: auth.error, mustChangePassword: auth.mustChangePassword });
+    return;
+  }
+  const store = readSquareStore();
+  const now = Date.now();
+  const oneDay = 24 * 60 * 60 * 1000;
+  const trend = Array.from({ length: 14 }, (_, index) => {
+    const dateKey = squareDayKey(now - (13 - index) * oneDay);
+    const recommendLogs = store.recommendLogs.filter((log) => squareDayKey(log.timestamp) === dateKey);
+    const likeLogs = store.likeLogs.filter((log) => squareDayKey(log.timestamp) === dateKey);
+    return {
+      dateKey,
+      recommendAttempts: recommendLogs.length,
+      added: recommendLogs.filter((log) => log.action === "added").length,
+      replaced: recommendLogs.filter((log) => log.action === "replaced").length,
+      rejected: recommendLogs.filter((log) => log.result === "rejected").length,
+      likes: likeLogs.filter((log) => log.result === "success" && log.action === "like").length,
+      unlikes: likeLogs.filter((log) => log.result === "success" && log.action === "unlike").length,
+    };
+  });
+  const rejectedReasons = store.recommendLogs
+    .filter((log) => log.result === "rejected")
+    .reduce<Record<string, number>>((acc, log) => {
+      acc[log.reasonCode || "unknown"] = (acc[log.reasonCode || "unknown"] || 0) + 1;
+      return acc;
+    }, {});
+  const activeItems = squareActiveItems(store);
+  const totalPublished = store.recommendLogs.filter((log) => log.action === "added" || log.action === "replaced").length;
+  const totalReplaced = store.recommendLogs.filter((log) => log.action === "replaced").length;
+  sendJson(res, 200, {
+    ok: true,
+    overview: {
+      activeItems: activeItems.length,
+      totalItems: store.items.length,
+      totalRecommendAttempts: store.recommendLogs.length,
+      totalLikes: store.likeLogs.filter((log) => log.result === "success" && log.action === "like").length,
+      replacementRate: totalPublished ? Math.round((totalReplaced / totalPublished) * 1000) / 10 : 0,
+      likeRate: activeItems.length ? Math.round((activeItems.reduce((sum, item) => sum + (item.likeCount || 0), 0) / activeItems.length) * 10) / 10 : 0,
+      trend,
+      rejectedReasonTop: Object.entries(rejectedReasons)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 8)
+        .map(([reasonCode, count]) => ({ reasonCode, count })),
+      riskEvents: store.moderationAudits.slice(0, 80),
+    },
+  });
+}
+
+async function handleSquareAdminExport(req: IncomingMessage, res: ServerResponse) {
+  if (req.method !== "GET") {
+    sendJson(res, 405, { ok: false, error: "Method not allowed" });
+    return;
+  }
+  const auth = getSquareAdminAuth(req);
+  if (!auth.ok) {
+    sendJson(res, auth.status, { ok: false, error: auth.error, mustChangePassword: auth.mustChangePassword });
+    return;
+  }
+  const url = new URL(req.url || "/", "http://localhost");
+  const format = url.searchParams.get("format") || "json";
+  const dateKey = url.searchParams.get("dateKey") || squareDayKey();
+  const store = readSquareStore();
+  const exportedAt = new Date().toISOString();
+  const recommendLogs = store.recommendLogs.filter((log) => squareDayKey(log.timestamp) === dateKey);
+  const likeLogs = store.likeLogs.filter((log) => squareDayKey(log.timestamp) === dateKey);
+  const moderationAudits = store.moderationAudits.filter((audit) => squareDayKey(audit.timestamp) === dateKey);
+  const relatedItemIds = new Set<string>();
+  recommendLogs.forEach((log) => {
+    if (log.itemId) relatedItemIds.add(log.itemId);
+    if (log.replacedItemId) relatedItemIds.add(log.replacedItemId);
+  });
+  likeLogs.forEach((log) => relatedItemIds.add(log.itemId));
+  moderationAudits.forEach((audit) => {
+    if (audit.itemId) relatedItemIds.add(audit.itemId);
+  });
+  const items = store.items.filter((item) => squareDayKey(item.createdAt) === dateKey || relatedItemIds.has(item.id));
+  if (format === "csv") {
+    const rows = [
+      ["type", "timestamp", "requestId", "apiKeyHash", "itemId", "imageId", "action", "result", "reasonCode", "replacedItemId", "remainingDailyQuota", "remainingShelfSlots", "likeCount", "remainingLikeQuota", "ipHash", "uaHash"],
+      ...recommendLogs.map((log) => [
+        "recommend",
+        new Date(log.timestamp).toISOString(),
+        log.requestId,
+        log.apiKeyHash,
+        log.itemId || "",
+        log.imageId || "",
+        log.action,
+        log.result,
+        log.reasonCode,
+        log.replacedItemId || "",
+        String(log.remainingDailyQuota),
+        String(log.remainingShelfSlots),
+        "",
+        "",
+        log.ipHash,
+        log.uaHash,
+      ]),
+      ...likeLogs.map((log) => [
+        "like",
+        new Date(log.timestamp).toISOString(),
+        log.requestId,
+        log.apiKeyHash,
+        log.itemId,
+        "",
+        log.action,
+        log.result,
+        log.reasonCode,
+        "",
+        "",
+        "",
+        String(log.likeCount),
+        String(log.remainingLikeQuota),
+        log.ipHash,
+        log.uaHash,
+      ]),
+    ];
+    const csv = rows
+      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, "\"\"")}"`).join(","))
+      .join("\n");
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Content-Disposition", `attachment; filename="imagehub-square-audit-${dateKey}-${exportedAt.replace(/[:.]/g, "-")}.csv"`);
+    res.end(csv);
+    appendAuditLog(auth.user.username, "admin_export_square_logs", `dateKey=${dateKey} format=csv count=${recommendLogs.length + likeLogs.length}`);
+    return;
+  }
+  const payload = {
+    exportedAt,
+    exportedBy: auth.user.username,
+    schemaVersion: 1,
+    dateKey,
+    items: items.map(squareItemForExport),
+    recommendLogs,
+    likeLogs,
+    quotas: store.quotas.filter((quota) => quota.dateKey === dateKey),
+    moderationAudits,
+    counts: {
+      items: items.length,
+      activeItems: items.filter((item) => item.active !== false).length,
+      recommendLogs: recommendLogs.length,
+      likeLogs: likeLogs.length,
+      quotas: store.quotas.filter((quota) => quota.dateKey === dateKey).length,
+      moderationAudits: moderationAudits.length,
+    },
+  };
+  res.statusCode = 200;
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Content-Disposition", `attachment; filename="imagehub-square-audit-${dateKey}-${exportedAt.replace(/[:.]/g, "-")}.json"`);
+  res.end(JSON.stringify(payload, null, 2));
+  appendAuditLog(auth.user.username, "admin_export_square_logs", `dateKey=${dateKey} format=json count=${recommendLogs.length + likeLogs.length}`);
+}
+
 function imageProxyPlugin(): PluginOption {
   return {
     name: "image-api-proxy",
     configureServer(server: ViteDevServer) {
       ensureAdminStore();
+      ensureSquareStore();
       server.middlewares.use("/api/reference-images", (req, res) => {
         if (req.method !== "GET" && req.method !== "HEAD") {
           sendJson(res, 405, { ok: false, error: "Method not allowed" });
@@ -2345,6 +3356,30 @@ function imageProxyPlugin(): PluginOption {
           return;
         }
         res.end(record.bytes);
+      });
+
+      server.middlewares.use("/api/square/feed", (req, res) => {
+        void handleSquareFeed(req, res);
+      });
+
+      server.middlewares.use("/api/square/quota", (req, res) => {
+        void handleSquareQuota(req, res);
+      });
+
+      server.middlewares.use("/api/square/recommend", (req, res) => {
+        void handleSquareRecommend(req, res);
+      });
+
+      server.middlewares.use("/api/square/like", (req, res) => {
+        void handleSquareLike(req, res);
+      });
+
+      server.middlewares.use("/api/square/admin/overview", (req, res) => {
+        void handleSquareAdminOverview(req, res);
+      });
+
+      server.middlewares.use("/api/square/admin/export", (req, res) => {
+        void handleSquareAdminExport(req, res);
       });
 
       server.middlewares.use("/api/admin", async (req, res) => {
@@ -2652,7 +3687,11 @@ function imageProxyPlugin(): PluginOption {
             onChunk: (delta, accumulated) => {
               chunkCount += 1;
               lastChunkAt = Date.now();
-              sse("chunk", { delta, totalLength: accumulated.length });
+              sse("chunk", {
+                delta,
+                totalLength: accumulated.length,
+                preview: truncateText(accumulated, 420),
+              });
             },
           });
 
@@ -2708,6 +3747,22 @@ function imageProxyPlugin(): PluginOption {
         const requestId = randomUUID();
         const startedAt = Date.now();
         let logCreated = false;
+        let sseStarted = false;
+        let chunkCount = 0;
+        let lastChunkAt = 0;
+        const sse = (event: string, data: unknown) => {
+          if (!sseStarted) {
+            res.statusCode = 200;
+            res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+            res.setHeader("Cache-Control", "no-cache, no-transform");
+            res.setHeader("Connection", "keep-alive");
+            res.setHeader("X-Accel-Buffering", "no");
+            res.flushHeaders?.();
+            sseStarted = true;
+          }
+          res.write(`event: ${event}\n`);
+          res.write(`data: ${JSON.stringify(data)}\n\n`);
+        };
 
         try {
           const body = await readJsonBody(req);
@@ -2759,13 +3814,30 @@ function imageProxyPlugin(): PluginOption {
           });
           logCreated = true;
 
+          sse("started", { requestId, model: analysisModel || "local-agent-heuristic", startedAt });
+
           const localAnalysis = buildLocalAgentModeAnalysis(body);
           let analysis = localAnalysis;
           let fallbackReason = "";
 
           if (analysisModel && apiKey) {
             try {
-              analysis = await analyzeAgentModeWithGpt(baseUrl, apiKey, body, requestId);
+              analysis = await analyzeAgentModeWithGpt(baseUrl, apiKey, body, requestId, {
+                onUpstreamConnected: (status) => {
+                  sse("upstream_connected", { status, elapsedMs: Date.now() - startedAt });
+                },
+                onFirstByte: () => {
+                  sse("receiving", { elapsedMs: Date.now() - startedAt });
+                },
+                onChunk: (_delta, accumulated) => {
+                  chunkCount += 1;
+                  lastChunkAt = Date.now();
+                  sse("chunk", {
+                    totalLength: accumulated.length,
+                    preview: truncateText(accumulated, 420),
+                  });
+                },
+              });
             } catch (error) {
               fallbackReason = truncateText(
                 error instanceof Error ? error.message : JSON.stringify(sanitizeForLog(error)),
@@ -2791,15 +3863,19 @@ function imageProxyPlugin(): PluginOption {
                 usedModel: analysisModel || "local-agent-heuristic",
                 fallbackReason: fallbackReason || undefined,
                 analysis,
+                chunkCount,
               }),
             });
           }
 
-          sendJson(res, 200, {
-            ok: true,
+          sse("done", {
             requestId,
             analysis,
+            durationMs: finishedAt - startedAt,
+            chunkCount,
+            fallbackReason: fallbackReason || undefined,
           });
+          res.end();
         } catch (error) {
           const status = isAllowedApiBaseUrlError(error) ? 400 : httpStatusFromDetail(error) || 500;
           if (logCreated) {
@@ -2812,18 +3888,27 @@ function imageProxyPlugin(): PluginOption {
               errorType: summary.type || "agent_analysis_error",
               errorCode: summary.code,
               errorRaw: summary.raw,
-              responseBody: sanitizeForLog({ ok: false, requestId, status, detail: error }),
+              responseBody: sanitizeForLog({
+                ok: false,
+                requestId,
+                status,
+                detail: error,
+                chunkCount,
+                lastChunkAt: lastChunkAt ? lastChunkAt - startedAt : null,
+              }),
               finishedAt,
               durationMs: finishedAt - startedAt,
             });
           }
-          sendJson(res, status, {
-            ok: false,
-            requestId,
-            detail: error && typeof error === "object" && "error" in (error as Record<string, unknown>)
-              ? error
-              : { status, error: error instanceof Error ? error.message : String(error) },
-          });
+          const detail = error && typeof error === "object" && "error" in (error as Record<string, unknown>)
+            ? error
+            : { status, error: error instanceof Error ? error.message : String(error) };
+          if (sseStarted) {
+            sse("error", { requestId, status, detail, chunkCount });
+            res.end();
+          } else {
+            sendJson(res, status, { ok: false, requestId, detail });
+          }
         }
       });
 

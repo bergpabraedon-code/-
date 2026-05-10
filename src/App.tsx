@@ -10,6 +10,9 @@ import {
   Database,
   Download,
   DownloadCloud,
+  ExternalLink,
+  Flame,
+  Heart,
   ImagePlus,
   Loader2,
   LogOut,
@@ -23,6 +26,7 @@ import {
   Send,
   Settings2,
   ShieldCheck,
+  Star,
   Square,
   CheckSquare,
   Trash2,
@@ -273,6 +277,9 @@ type PromptAnalysisState = {
   message: string;
   result?: PromptAnalysisResult;
   error?: string;
+  streamPreview?: string;
+  streamCharacters?: number;
+  streamChunks?: number;
 };
 
 type PromptVariant = "stable" | "creative" | "commercial";
@@ -343,7 +350,7 @@ type AnalysisCountdown = {
 
 type AgentModeIntentType = "single_image" | "multi_image_batch" | "brochure_project" | "page_refine" | "unknown";
 type AgentModeCostLevel = "low" | "medium" | "high";
-type AgentModeStatus = "idle" | "analyzing" | "needs_confirmation" | "planned" | "executing" | "error";
+type AgentModeStatus = "idle" | "analyzing" | "receiving" | "needs_confirmation" | "planned" | "executing" | "error";
 
 type AgentModeJobSpec = {
   id: string;
@@ -396,6 +403,10 @@ type AgentModeState = {
   requestId?: string;
   error?: string;
   result?: AgentModeAnalysisResult;
+  streamPreview?: string;
+  streamCharacters?: number;
+  streamChunks?: number;
+  requestPrompt?: string;
 };
 
 type PreviewItem = {
@@ -420,7 +431,123 @@ type PreviewItem = {
   submittedReferenceImages?: SubmittedReference[];
 };
 
-type AppPage = "home" | "studio" | "admin";
+type AppPage = "home" | "studio" | "square" | "admin";
+
+type SquareFeedTab = "latest" | "hot" | "top_day" | "top_week" | "top_month";
+
+type SquareFeedItem = {
+  id: string;
+  imageId: string;
+  requestId?: string;
+  thumbnailDataUrl: string;
+  prompt: string;
+  caption: string;
+  model: string;
+  params: Partial<ImageParams> & Record<string, unknown>;
+  width?: number;
+  height?: number;
+  aspectRatio?: string;
+  sourceType: string;
+  reasonPlan?: unknown;
+  recommenderLabel: string;
+  pageLabel?: string;
+  likeCount: number;
+  createdAt: number;
+  updatedAt: number;
+  rankScore: number;
+  likedByRequester?: boolean;
+};
+
+type SquareFeedResponse = {
+  ok: boolean;
+  tab: SquareFeedTab;
+  items: SquareFeedItem[];
+  nextCursor: string;
+  hasMore: boolean;
+  error?: string;
+};
+
+type SquareQuotaResponse = {
+  ok: boolean;
+  dailyRecommendUsed: number;
+  dailyRecommendLeft: number;
+  dailyLikeUsed: number;
+  dailyLikeLeft: number;
+  shelfCount: number;
+  shelfLimit: number;
+  dayKey?: string;
+  error?: string;
+};
+
+type SquareRecommendResponse = {
+  ok: boolean;
+  status?: string;
+  action?: "added" | "replaced" | "rejected";
+  item?: SquareFeedItem;
+  remainingDailyQuota?: number;
+  remainingShelfSlots?: number;
+  replacedItemId?: string;
+  reasonCode?: string;
+  error?: string;
+};
+
+type SquareLikeResponse = {
+  ok: boolean;
+  status?: "liked" | "unliked" | "rejected";
+  action?: "liked" | "unliked" | "noop" | "rejected";
+  likeCount?: number;
+  remainingLikeQuota?: number;
+  reasonCode?: string;
+  error?: string;
+};
+
+type SquareRecommendStatus = {
+  status: "submitting" | "success" | "error";
+  message: string;
+  itemId?: string;
+};
+
+type SquareAdminTrend = {
+  dateKey: string;
+  recommendAttempts: number;
+  added: number;
+  replaced: number;
+  rejected: number;
+  likes: number;
+  unlikes: number;
+};
+
+type SquareAdminReason = {
+  reasonCode: string;
+  count: number;
+};
+
+type SquareAdminRiskEvent = {
+  id: string;
+  requestId: string;
+  apiKeyHash: string;
+  itemId?: string;
+  imageId?: string;
+  event: string;
+  reasonCode: string;
+  severity: "low" | "medium" | "high";
+  ipHash: string;
+  uaHash: string;
+  timestamp: number;
+  detail?: unknown;
+};
+
+type SquareAdminOverview = {
+  activeItems: number;
+  totalItems: number;
+  totalRecommendAttempts: number;
+  totalLikes: number;
+  replacementRate: number;
+  likeRate: number;
+  trend: SquareAdminTrend[];
+  rejectedReasonTop: SquareAdminReason[];
+  riskEvents: SquareAdminRiskEvent[];
+};
 
 type AdminUserView = {
   username: string;
@@ -491,6 +618,7 @@ type AdminStats = {
 const DB_NAME = "codex-image-batch-studio";
 const STORE_NAME = "history";
 const HISTORY_PAGE_SIZE = 20;
+const SQUARE_PAGE_SIZE = 20;
 const REFERENCE_LIMIT = 6;
 const MAX_REFERENCE_SIZE = 10 * 1024 * 1024;
 const MAX_REFERENCE_REQUEST_BYTES = 512 * 1024;
@@ -502,6 +630,13 @@ const FRONTEND_VERSION_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const API_KEY_MIN_LENGTH = 8;
 const AGENT_MODE_STORAGE_KEY = "imageStudioAgentModeEnabled";
 const AGENT_MODE_NAME = "Agent 模式 A";
+const SQUARE_FEED_TABS: Array<{ value: SquareFeedTab; label: string; icon: typeof Clock3 }> = [
+  { value: "latest", label: "最新", icon: Clock3 },
+  { value: "hot", label: "热门", icon: Flame },
+  { value: "top_day", label: "精选", icon: Star },
+  { value: "top_week", label: "本周", icon: BarChart3 },
+  { value: "top_month", label: "本月", icon: BarChart3 },
+];
 const CURRENT_FRONTEND_VERSION = typeof __FRONTEND_BUILD_VERSION__ === "string"
   ? __FRONTEND_BUILD_VERSION__
   : "dev";
@@ -523,13 +658,13 @@ const DEFAULT_IMAGE_RESOLUTION: ImageResolution = "1K";
 const SUPPORTED_REFERENCE_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 
 const ASPECT_RATIOS = [
-  { value: "1:1", label: "1:1 方图", hint: "头像、商品主图、社媒配图" },
+  { value: "1:1", label: "1:1 方图 · 1024x1024", hint: "GPT Image 官方方图尺寸" },
   { value: "4:5", label: "4:5 竖版社媒", hint: "小红书、信息流、电商卡片" },
   { value: "5:4", label: "5:4 横版产品", hint: "商品展示、横版构图" },
   { value: "3:4", label: "3:4 竖版照片", hint: "人像、封面、海报草图" },
   { value: "4:3", label: "4:3 经典横图", hint: "摄影、PPT、内容插图" },
-  { value: "2:3", label: "2:3 竖版海报", hint: "海报、人物全身、印刷" },
-  { value: "3:2", label: "3:2 相机横图", hint: "风景、产品场景、摄影" },
+  { value: "2:3", label: "2:3 竖图 · 1024x1536", hint: "GPT Image 官方竖图尺寸" },
+  { value: "3:2", label: "3:2 横图 · 1536x1024", hint: "GPT Image 官方横图尺寸" },
   { value: "9:16", label: "9:16 手机竖屏", hint: "短视频封面、Story、壁纸" },
   { value: "16:9", label: "16:9 宽屏", hint: "视频封面、网页头图、桌面壁纸" },
   { value: "21:9", label: "21:9 超宽屏", hint: "横幅、电影感场景" },
@@ -541,23 +676,24 @@ const ASPECT_RATIOS = [
 ] as const;
 
 const ALL_ASPECT_RATIOS = ASPECT_RATIOS.map((ratio) => ratio.value);
+const GPT_IMAGE_SUPPORTED_ASPECT_RATIOS = ["1:1", "2:3", "3:2"] as const;
 
 const IMAGEN_ASPECT_RATIOS = ["1:1", "3:4", "4:3", "9:16", "16:9"];
 const STABILITY_ASPECT_RATIOS = ["16:9", "1:1", "21:9", "2:3", "3:2", "4:5", "5:4", "9:16", "9:21"];
-const OPENAI_ASPECT_RATIOS = ["1:1", "4:5", "5:4", "3:4", "4:3", "2:3", "3:2", "9:16", "16:9", "21:9", "9:21"];
+const OPENAI_ASPECT_RATIOS = [...GPT_IMAGE_SUPPORTED_ASPECT_RATIOS];
 
 const SIZE_BY_RATIO: Record<string, string> = {
   "1:1": "1024x1024",
   "4:5": "1024x1280",
   "5:4": "1280x1024",
-  "3:4": "1024x1365",
-  "4:3": "1365x1024",
+  "3:4": "1152x1536",
+  "4:3": "1536x1152",
   "2:3": "1024x1536",
   "3:2": "1536x1024",
   "9:16": "1024x1792",
   "16:9": "1792x1024",
-  "21:9": "1792x768",
-  "9:21": "768x1792",
+  "21:9": "2016x864",
+  "9:21": "864x2016",
   "4:1": "2048x512",
   "1:4": "512x2048",
   "8:1": "2048x256",
@@ -1234,6 +1370,7 @@ function getClientId() {
 
 function pageFromHash(): AppPage {
   if (window.location.hash === "#studio") return "studio";
+  if (window.location.hash === "#square") return "square";
   if (window.location.hash.startsWith("#admin")) return "admin";
   return "home";
 }
@@ -1473,12 +1610,27 @@ function getAspectDefinition(value: string) {
   return ASPECT_RATIOS.find((ratio) => ratio.value === value) || ASPECT_RATIOS[0];
 }
 
-function getSupportedAspectRatios(protocol: ImageProtocol) {
+function usesOfficialGptImageSizing(protocol: ImageProtocol, model = "") {
+  const normalized = model.replace(/^models\//, "").trim().toLowerCase();
+  const isImage2 = normalized === "gpt-image-2"
+    || normalized === "gpt-5.4-image-2"
+    || normalized.includes("image-2");
+  return isImage2 && (
+    protocol === "custom-openai"
+    || protocol === "openai-images"
+    || protocol === "openai-responses"
+  );
+}
+
+function getSupportedAspectRatios(protocol: ImageProtocol, model = "") {
+  if (usesOfficialGptImageSizing(protocol, model)) {
+    return [...GPT_IMAGE_SUPPORTED_ASPECT_RATIOS];
+  }
   return getProtocolDefinition(protocol).supportedAspectRatios;
 }
 
-function isAspectRatioSupported(protocol: ImageProtocol, aspectRatio: string) {
-  return getSupportedAspectRatios(protocol).includes(aspectRatio);
+function isAspectRatioSupported(protocol: ImageProtocol, aspectRatio: string, model = "") {
+  return getSupportedAspectRatios(protocol, model).includes(aspectRatio);
 }
 
 function isImageResolution(value: unknown): value is ImageResolution {
@@ -1499,6 +1651,25 @@ function scaleSize(size: string, resolution: ImageResolution) {
 function resolveSize(aspectRatio: string, resolution: ImageResolution = DEFAULT_IMAGE_RESOLUTION) {
   const baseSize = SIZE_BY_RATIO[aspectRatio] || SIZE_BY_RATIO["1:1"];
   return scaleSize(baseSize, safeImageResolution(resolution));
+}
+
+function resolveRequestSize(
+  aspectRatio: string,
+  resolution: ImageResolution = DEFAULT_IMAGE_RESOLUTION,
+  protocol: ImageProtocol,
+  model = "",
+) {
+  const baseSize = SIZE_BY_RATIO[aspectRatio] || SIZE_BY_RATIO["1:1"];
+  if (usesOfficialGptImageSizing(protocol, model)) return baseSize;
+  return scaleSize(baseSize, safeImageResolution(resolution));
+}
+
+function normalizeResolutionForRequest(
+  resolution: ImageResolution,
+  protocol: ImageProtocol,
+  model = "",
+) {
+  return usesOfficialGptImageSizing(protocol, model) ? DEFAULT_IMAGE_RESOLUTION : safeImageResolution(resolution);
 }
 
 function normalizeImageParams(params: Partial<ImageParams> = {}): ImageParams {
@@ -1840,6 +2011,15 @@ function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
 function createReferenceThumbnail(dataUrl: string, maxEdge = 160): Promise<string> {
   return new Promise((resolve, reject) => {
     const image = new Image();
@@ -1866,6 +2046,42 @@ function createReferenceThumbnail(dataUrl: string, maxEdge = 160): Promise<strin
       }
     };
     image.onerror = () => reject(new Error("无法读取参考图缩略图"));
+    image.src = dataUrl;
+  });
+}
+
+function createSquareThumbnail(dataUrl: string, maxEdge = 1024): Promise<{ dataUrl: string; width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      const naturalWidth = image.naturalWidth;
+      const naturalHeight = image.naturalHeight;
+      const longestEdge = Math.max(naturalWidth, naturalHeight);
+      if (longestEdge > 0 && longestEdge <= maxEdge) {
+        resolve({ dataUrl, width: naturalWidth, height: naturalHeight });
+        return;
+      }
+      const scale = longestEdge > 0 ? Math.min(1, maxEdge / longestEdge) : 1;
+      const width = Math.max(1, Math.round(naturalWidth * scale));
+      const height = Math.max(1, Math.round(naturalHeight * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d", { alpha: true });
+      if (!context) {
+        reject(new Error("无法创建广场压缩图"));
+        return;
+      }
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
+      context.drawImage(image, 0, 0, width, height);
+      try {
+        resolve({ dataUrl: canvas.toDataURL("image/webp", 0.82), width, height });
+      } catch {
+        resolve({ dataUrl: canvas.toDataURL("image/png"), width, height });
+      }
+    };
+    image.onerror = () => reject(new Error("无法读取广场推荐图"));
     image.src = dataUrl;
   });
 }
@@ -2538,7 +2754,7 @@ function buildLocalPromptAnalysis({
       fix: "切换到兼容协议或 Gemini Native。",
     });
   }
-  if (!isAspectRatioSupported(protocol, params.aspectRatio)) {
+  if (!isAspectRatioSupported(protocol, params.aspectRatio, selectedModel)) {
     risks.push({
       level: "high",
       title: "宽高比不兼容",
@@ -2556,13 +2772,23 @@ function buildLocalPromptAnalysis({
   }
 
   const suggestedAspectRatio = recommendAspectRatioForPrompt(trimmed, params.aspectRatio);
+  const fallbackAspectRatio = getSupportedAspectRatios(protocol, selectedModel)[0] || "1:1";
+  const nextSuggestedAspectRatio = isAspectRatioSupported(protocol, suggestedAspectRatio, selectedModel)
+    ? suggestedAspectRatio
+    : fallbackAspectRatio;
   const suggestedParams: SuggestedParams = {
-    aspectRatio: isAspectRatioSupported(protocol, suggestedAspectRatio) ? suggestedAspectRatio : getSupportedAspectRatios(protocol)[0] || "1:1",
-    size: resolveSize(
-      isAspectRatioSupported(protocol, suggestedAspectRatio) ? suggestedAspectRatio : getSupportedAspectRatios(protocol)[0] || "1:1",
-      params.resolution,
+    aspectRatio: nextSuggestedAspectRatio,
+    size: resolveRequestSize(
+      nextSuggestedAspectRatio,
+      safeImageResolution(params.resolution),
+      protocol,
+      selectedModel,
     ),
-    resolution: params.resolution,
+    resolution: normalizeResolutionForRequest(
+      safeImageResolution(params.resolution),
+      protocol,
+      selectedModel,
+    ),
     count: /海报|封面|logo|文字|信息图/.test(trimmed) ? 2 : Math.min(Math.max(params.batchCount, 2), 4),
     quality: selectedModel ? params.quality : "auto",
     styleStrength: mode === "style" ? "high" : "medium",
@@ -2843,6 +3069,7 @@ export default function App() {
   const [sidebarRecords, setSidebarRecords] = useState<HistoryRecord[]>([]);
   const [highlightedRecordId, setHighlightedRecordId] = useState<string>("");
   const [previewItem, setPreviewItem] = useState<PreviewItem | null>(null);
+  const [squareRecommendState, setSquareRecommendState] = useState<Record<string, SquareRecommendStatus>>({});
   const [isLoadingMainRecords, setIsLoadingMainRecords] = useState(false);
   const [isLoadingSidebarRecords, setIsLoadingSidebarRecords] = useState(false);
   const [hasMoreMainRecords, setHasMoreMainRecords] = useState(true);
@@ -2926,11 +3153,23 @@ export default function App() {
   const protocolDefinition = getProtocolDefinition(apiConfig.protocol);
   const currentApiConnectionKey = apiConnectionKey(apiConfig);
   const isModelConnectionVerified = modelState.status === "ready" && verifiedModelKey === currentApiConnectionKey;
+  const isOfficialGptImageSizeMode = usesOfficialGptImageSizing(apiConfig.protocol, selectedModel);
+  const supportedAspectRatios = getSupportedAspectRatios(apiConfig.protocol, selectedModel);
+  const supportedAspectOptions = ASPECT_RATIOS.filter((ratio) => supportedAspectRatios.includes(ratio.value));
   const selectedAspectRatio = getAspectDefinition(params.aspectRatio);
-  const selectedResolution = safeImageResolution(params.resolution);
+  const selectedResolution = normalizeResolutionForRequest(
+    safeImageResolution(params.resolution),
+    apiConfig.protocol,
+    selectedModel,
+  );
   const selectedResolutionDefinition = IMAGE_RESOLUTIONS.find((item) => item.value === selectedResolution) || IMAGE_RESOLUTIONS[0];
-  const resolvedRequestSize = resolveSize(params.aspectRatio, selectedResolution);
-  const aspectRatioSupported = isAspectRatioSupported(apiConfig.protocol, params.aspectRatio);
+  const resolvedRequestSize = resolveRequestSize(
+    params.aspectRatio,
+    selectedResolution,
+    apiConfig.protocol,
+    selectedModel,
+  );
+  const aspectRatioSupported = isAspectRatioSupported(apiConfig.protocol, params.aspectRatio, selectedModel);
   const composerConfigSummary = `${params.batchCount}张 · ${params.aspectRatio} · ${selectedResolution}`;
   const composerConfigDetail = `${resolvedRequestSize} · ${params.quality} · ${params.outputFormat.toUpperCase()} · 并发 ${params.concurrency}`;
 
@@ -2987,9 +3226,7 @@ export default function App() {
   const latestLocalLogLevel = localLogs[0]?.level;
   const isAgentModeBusy = isAgentModeEnabled && (
     agentModeState.status === "analyzing"
-    || agentModeState.status === "executing"
-    || agentModeState.status === "needs_confirmation"
-    || agentModeState.status === "planned"
+    || agentModeState.status === "receiving"
   );
   const modelStatusMessage = isAutoLoadingModels
     ? "正在自动验证 API Key 并读取 image-2 模型..."
@@ -3005,6 +3242,7 @@ export default function App() {
     isModelConnectionVerified &&
     aspectRatioSupported;
   const canRequestGenerate = canGenerate && !isPromptAnalyzing && !analysisCountdown && !isAgentModeBusy;
+  const canUseSquareIdentity = apiConfig.apiKey.trim().length >= API_KEY_MIN_LENGTH;
 
   useEffect(() => {
     void loadMainRecordsPage();
@@ -3138,10 +3376,22 @@ export default function App() {
   }, [isAgentModeEnabled]);
 
   useEffect(() => {
-    if (isAspectRatioSupported(apiConfig.protocol, params.aspectRatio)) return;
-    const fallbackRatio = getSupportedAspectRatios(apiConfig.protocol)[0] || "1:1";
-    updateParams({ aspectRatio: fallbackRatio, size: resolveSize(fallbackRatio, params.resolution) });
-  }, [apiConfig.protocol, params.aspectRatio, params.resolution]);
+    const normalizedResolution = normalizeResolutionForRequest(
+      safeImageResolution(params.resolution),
+      apiConfig.protocol,
+      selectedModel,
+    );
+    const fallbackRatio = getSupportedAspectRatios(apiConfig.protocol, selectedModel)[0] || "1:1";
+    const nextAspectRatio = isAspectRatioSupported(apiConfig.protocol, params.aspectRatio, selectedModel)
+      ? params.aspectRatio
+      : fallbackRatio;
+    if (nextAspectRatio === params.aspectRatio && normalizedResolution === params.resolution) return;
+    updateParams({
+      aspectRatio: nextAspectRatio,
+      resolution: normalizedResolution,
+      size: resolveRequestSize(nextAspectRatio, normalizedResolution, apiConfig.protocol, selectedModel),
+    });
+  }, [apiConfig.protocol, selectedModel, params.aspectRatio, params.resolution]);
 
   useEffect(() => {
     if (!isPromptAnalyzing) {
@@ -3654,7 +3904,7 @@ export default function App() {
         model: job.model,
         prompt: truncateForLog(job.prompt),
         aspectRatio: job.params.aspectRatio,
-        size: job.params.size || resolveSize(job.params.aspectRatio, job.params.resolution),
+        size: job.params.size || resolveRequestSize(job.params.aspectRatio, job.params.resolution, job.protocol, job.model),
         resolution: job.params.resolution,
         quality: job.params.quality,
         outputFormat: job.params.outputFormat,
@@ -4008,7 +4258,7 @@ export default function App() {
             model: job.model,
             prompt: job.prompt,
             aspectRatio: job.params.aspectRatio,
-            size: job.params.size || resolveSize(job.params.aspectRatio, job.params.resolution),
+            size: job.params.size || resolveRequestSize(job.params.aspectRatio, job.params.resolution, job.protocol, job.model),
             resolution: job.params.resolution,
             quality: job.params.quality,
             outputFormat: job.params.outputFormat,
@@ -4264,7 +4514,7 @@ export default function App() {
       prompt: truncateForLog(promptText),
       negativePrompt: truncateForLog(analysisParams.negativePrompt || "", 400),
       aspectRatio: analysisParams.aspectRatio,
-      size: analysisParams.size || resolveSize(analysisParams.aspectRatio, analysisParams.resolution),
+      size: analysisParams.size || resolveRequestSize(analysisParams.aspectRatio, analysisParams.resolution, apiConfig.protocol, selectedModel),
       resolution: analysisParams.resolution,
       quality: analysisParams.quality,
       outputFormat: analysisParams.outputFormat,
@@ -4302,7 +4552,7 @@ export default function App() {
         prompt: promptText,
         negativePrompt: analysisParams.negativePrompt,
         aspectRatio: analysisParams.aspectRatio,
-        size: analysisParams.size || resolveSize(analysisParams.aspectRatio, analysisParams.resolution),
+        size: analysisParams.size || resolveRequestSize(analysisParams.aspectRatio, analysisParams.resolution, apiConfig.protocol, selectedModel),
         resolution: analysisParams.resolution,
         quality: analysisParams.quality,
         outputFormat: analysisParams.outputFormat,
@@ -4370,6 +4620,7 @@ export default function App() {
       let receivingAt: number | undefined;
       let lastError: unknown = null;
       let totalLength = 0;
+      let streamPreview = "";
 
       const flushFrame = (event: string, data: unknown) => {
         switch (event) {
@@ -4383,13 +4634,26 @@ export default function App() {
             break;
           case "receiving":
             receivingAt = Date.now();
-            setAnalysisState((current) => ({ ...current, status: "receiving", message: "正在接收结果..." }));
+            setAnalysisState((current) => ({
+              ...current,
+              status: "receiving",
+              message: "正在接收结果...",
+            }));
             break;
           case "chunk":
             chunkCount += 1;
             totalLength = (data as { totalLength?: number })?.totalLength ?? totalLength;
+            streamPreview = typeof (data as { preview?: unknown })?.preview === "string"
+              ? ((data as { preview?: string }).preview || "")
+              : streamPreview;
             setAnalysisState((current) => current.status === "receiving"
-              ? { ...current, message: `接收中... 已 ${totalLength} 字符` }
+              ? {
+                ...current,
+                message: `接收中... 已 ${totalLength} 字符`,
+                streamPreview,
+                streamCharacters: totalLength,
+                streamChunks: chunkCount,
+              }
               : current);
             break;
           case "done":
@@ -4501,17 +4765,21 @@ export default function App() {
     baseParams = params,
   ) {
     const suggestedRatio = result.suggestedParams.aspectRatio || baseParams.aspectRatio;
-    const nextRatio = applyRecommendedParams && isAspectRatioSupported(apiConfig.protocol, suggestedRatio)
+    const nextRatio = applyRecommendedParams && isAspectRatioSupported(apiConfig.protocol, suggestedRatio, selectedModel)
       ? suggestedRatio
       : baseParams.aspectRatio;
-    const nextResolution = applyRecommendedParams && result.suggestedParams.resolution
-      ? safeImageResolution(result.suggestedParams.resolution)
-      : safeImageResolution(baseParams.resolution);
+    const nextResolution = normalizeResolutionForRequest(
+      applyRecommendedParams && result.suggestedParams.resolution
+        ? safeImageResolution(result.suggestedParams.resolution)
+        : safeImageResolution(baseParams.resolution),
+      apiConfig.protocol,
+      selectedModel,
+    );
     return {
       ...baseParams,
       aspectRatio: nextRatio,
       resolution: nextResolution,
-      size: resolveSize(nextRatio, nextResolution),
+      size: resolveRequestSize(nextRatio, nextResolution, apiConfig.protocol, selectedModel),
       quality: applyRecommendedParams && protocolDefinition.supportsQuality && result.suggestedParams.quality
         ? result.suggestedParams.quality
         : baseParams.quality,
@@ -4547,6 +4815,9 @@ export default function App() {
       status: "analyzing",
       mode,
       message: analysisModeLabel(mode),
+      streamPreview: "",
+      streamCharacters: 0,
+      streamChunks: 0,
     });
     try {
       const result = await runPromptAnalysis(mode, submittedPrompt);
@@ -4654,6 +4925,9 @@ export default function App() {
       status: "analyzing",
       mode: "send",
       message: options.agentContext ? "Agent 行业预检" : "发送前智能检查",
+      streamPreview: "",
+      streamCharacters: 0,
+      streamChunks: 0,
     });
     try {
       const result = await runPromptAnalysis("send", submittedPrompt, analysisParams, options.agentContext, analysisReferences);
@@ -4743,7 +5017,7 @@ export default function App() {
       !isAllowedImageModel(selectedModel) ||
       !models.includes(selectedModel) ||
       modelState.status !== "ready" ||
-      !isAspectRatioSupported(apiConfig.protocol, batchParams.aspectRatio)
+      !isAspectRatioSupported(apiConfig.protocol, batchParams.aspectRatio, selectedModel)
     ) {
       return;
     }
@@ -4756,8 +5030,17 @@ export default function App() {
       ...batchParams,
       batchCount: total,
       concurrency,
-      resolution: safeImageResolution(batchParams.resolution),
-      size: resolveSize(batchParams.aspectRatio, safeImageResolution(batchParams.resolution)),
+      resolution: normalizeResolutionForRequest(
+        safeImageResolution(batchParams.resolution),
+        apiConfig.protocol,
+        selectedModel,
+      ),
+      size: resolveRequestSize(
+        batchParams.aspectRatio,
+        normalizeResolutionForRequest(safeImageResolution(batchParams.resolution), apiConfig.protocol, selectedModel),
+        apiConfig.protocol,
+        selectedModel,
+      ),
     };
     const candidateReferenceImages = options.referenceImagesOverride ?? usableReferenceImages;
     const snapshotReferenceImages = getProtocolDefinition(apiConfig.protocol).supportsReferenceImages
@@ -4787,15 +5070,19 @@ export default function App() {
 
   function buildAgentModeJobParams(spec: AgentModeJobSpec, baseParams = params): ImageParams {
     const recommendedRatio = spec.aspectRatio || recommendAspectRatioForPrompt(spec.prompt, baseParams.aspectRatio);
-    const aspectRatio = isAspectRatioSupported(apiConfig.protocol, recommendedRatio)
+    const aspectRatio = isAspectRatioSupported(apiConfig.protocol, recommendedRatio, selectedModel)
       ? recommendedRatio
-      : getSupportedAspectRatios(apiConfig.protocol)[0] || baseParams.aspectRatio;
-    const resolution = spec.resolution ? safeImageResolution(spec.resolution) : safeImageResolution(baseParams.resolution);
+      : getSupportedAspectRatios(apiConfig.protocol, selectedModel)[0] || baseParams.aspectRatio;
+    const resolution = normalizeResolutionForRequest(
+      spec.resolution ? safeImageResolution(spec.resolution) : safeImageResolution(baseParams.resolution),
+      apiConfig.protocol,
+      selectedModel,
+    );
     return {
       ...baseParams,
       aspectRatio,
       resolution,
-      size: spec.size || resolveSize(aspectRatio, resolution),
+      size: spec.size || resolveRequestSize(aspectRatio, resolution, apiConfig.protocol, selectedModel),
       quality: spec.quality || baseParams.quality,
       batchCount: 1,
       negativePrompt: spec.negativePrompt || baseParams.negativePrompt,
@@ -4844,11 +5131,7 @@ export default function App() {
     enqueueJobs(nextJobs, snapshotConfig);
     setAgentModePendingPlan(null);
     setAgentModeBrochureDraft(null);
-    setAgentModeState({
-      status: "executing",
-      message: `已提交 ${nextJobs.length} 个任务到生成队列。`,
-      result: options.analysisResult,
-    });
+    setAgentModeState({ status: "idle", message: "" });
     if (options.clearComposer !== false) {
       setPrompt("");
       setReferenceImages([]);
@@ -4905,6 +5188,42 @@ export default function App() {
     });
   }
 
+  function applyAgentModeAnalysisResult(
+    result: AgentModeAnalysisResult,
+    requestId: string | undefined,
+    submittedPrompt: string,
+  ) {
+    if (result.intentType === "brochure_project" && result.brochureProject) {
+      setAgentModePendingPlan(null);
+      setAgentModeBrochureDraft(result.brochureProject);
+      setAgentModeState({
+        status: "planned",
+        message: "已识别为宣传画册任务，请先确认页结构和模板方向。",
+        requestId,
+        result,
+        requestPrompt: submittedPrompt,
+      });
+      return;
+    }
+    if (result.requiresConfirmation || result.intentType === "multi_image_batch") {
+      setAgentModeBrochureDraft(null);
+      setAgentModePendingPlan(result);
+      setAgentModeState({
+        status: "needs_confirmation",
+        message: `已拆解出 ${result.jobs.length} 个独立任务，确认后进入队列。`,
+        requestId,
+        result,
+        requestPrompt: submittedPrompt,
+      });
+      return;
+    }
+    enqueueAgentModeJobs(result.jobs, {
+      analysisResult: result,
+      clearComposer: true,
+      scenarioLabel: "自动拆解任务",
+    });
+  }
+
   async function requestAgentModeExecution(submittedPrompt: string) {
     const analysisModel = preferredAnalysisModel;
     const requestStartedAt = Date.now();
@@ -4917,8 +5236,8 @@ export default function App() {
       protocol: apiConfig.protocol,
       imageModel: selectedModel,
       aspectRatio: params.aspectRatio,
-      size: params.size || resolveSize(params.aspectRatio, params.resolution),
-      resolution: params.resolution,
+      size: params.size || resolveRequestSize(params.aspectRatio, selectedResolution, apiConfig.protocol, selectedModel),
+      resolution: selectedResolution,
       quality: params.quality,
       outputFormat: params.outputFormat,
       count: params.batchCount,
@@ -4929,6 +5248,10 @@ export default function App() {
     setAgentModeState({
       status: "analyzing",
       message: `${AGENT_MODE_NAME} 正在理解你的任务并自动编排。`,
+      requestPrompt: submittedPrompt,
+      streamPreview: "",
+      streamCharacters: 0,
+      streamChunks: 0,
     });
     pushLocalLog({
       type: "agent_analysis",
@@ -4946,63 +5269,187 @@ export default function App() {
     try {
       const response = await fetch("/api/agent/analyze", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
         body: JSON.stringify(payload),
       });
-      const resultPayload = await readApiJson<{
-        ok?: boolean;
-        requestId?: string;
-        analysis?: unknown;
-        detail?: unknown;
-      }>(response, "/api/agent/analyze");
-      if (!response.ok || !resultPayload.ok) {
-        throw resultPayload.detail || resultPayload;
+
+      if (!response.ok && response.headers.get("content-type")?.includes("text/event-stream") !== true) {
+        const payloadJson = await readApiJson<{ ok?: boolean; requestId?: string; analysis?: unknown; detail?: unknown }>(response, "/api/agent/analyze");
+        if (!response.ok || !payloadJson.ok) {
+          throw payloadJson.detail || payloadJson;
+        }
+        const result = normalizeAgentModeAnalysisResult(payloadJson.analysis, submittedPrompt);
+        pushLocalLog({
+          type: "agent_analysis",
+          level: "success",
+          title: `${AGENT_MODE_NAME} 解析完成`,
+          message: result.reasoningSummary,
+          endpoint: "/api/agent/analyze",
+          requestId: payloadJson.requestId,
+          durationMs: Date.now() - requestStartedAt,
+          params: {
+            ...apiLogSnapshot(),
+            prompt: truncateForLog(submittedPrompt),
+          },
+          response: sanitizeClientLogValue(result) as Record<string, unknown>,
+        });
+        applyAgentModeAnalysisResult(result, payloadJson.requestId, submittedPrompt);
+        return;
       }
-      const result = normalizeAgentModeAnalysisResult(resultPayload.analysis, submittedPrompt);
+
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.includes("text/event-stream")) {
+        const payloadJson = await readApiJson<{ ok?: boolean; requestId?: string; analysis?: unknown; detail?: unknown }>(response, "/api/agent/analyze");
+        if (!response.ok || !payloadJson.ok) {
+          throw payloadJson.detail || payloadJson;
+        }
+        const result = normalizeAgentModeAnalysisResult(payloadJson.analysis, submittedPrompt);
+        pushLocalLog({
+          type: "agent_analysis",
+          level: "success",
+          title: `${AGENT_MODE_NAME} 解析完成`,
+          message: result.reasoningSummary,
+          endpoint: "/api/agent/analyze",
+          requestId: payloadJson.requestId,
+          durationMs: Date.now() - requestStartedAt,
+          params: {
+            ...apiLogSnapshot(),
+            prompt: truncateForLog(submittedPrompt),
+          },
+          response: sanitizeClientLogValue(result) as Record<string, unknown>,
+        });
+        applyAgentModeAnalysisResult(result, payloadJson.requestId, submittedPrompt);
+        return;
+      }
+
+      if (!response.body) throw new Error("分析响应体为空");
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw { error: `HTTP ${response.status}`, raw: truncateForLog(errorText, 1600) };
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let analysis: unknown = null;
+      let upstreamRequestId: string | undefined;
+      let chunkCount = 0;
+      let firstByteAt: number | undefined;
+      let receivingAt: number | undefined;
+      let lastError: unknown = null;
+      let totalLength = 0;
+      let streamPreview = "";
+
+      const flushFrame = (event: string, data: unknown) => {
+        switch (event) {
+          case "started":
+            upstreamRequestId = (data as { requestId?: string })?.requestId;
+            setAgentModeState((current) => ({
+              ...current,
+              status: "analyzing",
+              message: "已发送，等待模型响应...",
+            }));
+            break;
+          case "upstream_connected":
+            firstByteAt = Date.now();
+            setAgentModeState((current) => ({
+              ...current,
+              status: "analyzing",
+              message: "上游已连接，等待模型生成...",
+            }));
+            break;
+          case "receiving":
+            receivingAt = Date.now();
+            setAgentModeState((current) => ({
+              ...current,
+              status: "receiving",
+              message: "正在接收 AI 输出...",
+            }));
+            break;
+          case "chunk":
+            chunkCount += 1;
+            totalLength = (data as { totalLength?: number })?.totalLength ?? totalLength;
+            streamPreview = typeof (data as { preview?: unknown })?.preview === "string"
+              ? ((data as { preview?: string }).preview || "")
+              : streamPreview;
+            setAgentModeState((current) => ({
+              ...current,
+              status: "receiving",
+              message: `AI 输出中... 已接收 ${totalLength} 字符`,
+              streamPreview,
+              streamCharacters: totalLength,
+              streamChunks: chunkCount,
+            }));
+            break;
+          case "done":
+            analysis = (data as { analysis?: unknown })?.analysis ?? null;
+            break;
+          case "error":
+            lastError = (data as { detail?: unknown })?.detail ?? data;
+            break;
+        }
+      };
+
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let frame = "";
+          while ((frame = buffer.split("\n\n")[0] || "") && buffer.includes("\n\n")) {
+            const nextIndex = buffer.indexOf("\n\n");
+            const rawFrame = buffer.slice(0, nextIndex);
+            buffer = buffer.slice(nextIndex + 2);
+            let eventName = "message";
+            let dataText = "";
+            for (const line of rawFrame.split("\n")) {
+              if (line.startsWith("event:")) eventName = line.slice(6).trim();
+              if (line.startsWith("data:")) dataText += `${line.slice(5).trim()}\n`;
+            }
+            if (!dataText.trim()) continue;
+            try {
+              flushFrame(eventName, JSON.parse(dataText.trim()));
+            } catch {
+              flushFrame(eventName, { raw: dataText.trim() });
+            }
+          }
+        }
+      } finally {
+        try { reader.releaseLock(); } catch {}
+      }
+
+      if (!analysis && lastError) throw lastError;
+      if (!analysis) throw new Error("分析流结束但未收到 done 事件");
+
+      const result = normalizeAgentModeAnalysisResult(analysis, submittedPrompt);
       pushLocalLog({
         type: "agent_analysis",
         level: "success",
         title: `${AGENT_MODE_NAME} 解析完成`,
         message: result.reasoningSummary,
         endpoint: "/api/agent/analyze",
-        requestId: resultPayload.requestId,
+        requestId: upstreamRequestId,
         durationMs: Date.now() - requestStartedAt,
         params: {
           ...apiLogSnapshot(),
           prompt: truncateForLog(submittedPrompt),
         },
-        response: sanitizeClientLogValue(result) as Record<string, unknown>,
+        response: {
+          requestId: upstreamRequestId,
+          chunkCount,
+          totalLength,
+          firstByteMs: firstByteAt ? firstByteAt - requestStartedAt : null,
+          receivingMs: receivingAt ? receivingAt - requestStartedAt : null,
+          analysis: sanitizeClientLogValue(result),
+        },
       });
-      if (result.intentType === "brochure_project" && result.brochureProject) {
-        setAgentModeBrochureDraft(result.brochureProject);
-        setAgentModeState({
-          status: "planned",
-          message: "已识别为宣传画册任务，请先确认页结构和模板方向。",
-          requestId: resultPayload.requestId,
-          result,
-        });
-        return;
-      }
-      if (result.requiresConfirmation || result.intentType === "multi_image_batch") {
-        setAgentModePendingPlan(result);
-        setAgentModeState({
-          status: "needs_confirmation",
-          message: `已拆解出 ${result.jobs.length} 个独立任务，确认后进入队列。`,
-          requestId: resultPayload.requestId,
-          result,
-        });
-        return;
-      }
-      enqueueAgentModeJobs(result.jobs, {
-        analysisResult: result,
-        clearComposer: true,
-        scenarioLabel: "自动拆解任务",
-      });
+      applyAgentModeAnalysisResult(result, upstreamRequestId, submittedPrompt);
     } catch (error) {
       setAgentModeState({
         status: "error",
         message: "Agent 解析失败，请调整描述后重试。",
         error: formatError(error),
+        requestPrompt: submittedPrompt,
       });
       pushLocalLog({
         type: "agent_analysis",
@@ -5018,6 +5465,15 @@ export default function App() {
         error: safeLogError(error),
       });
     }
+  }
+
+  async function requestAgentModeReanalysis() {
+    const submittedPrompt = prompt.trim() || agentModeState.requestPrompt || "";
+    if (!submittedPrompt) return;
+    const apiKeyReady = await verifyApiKeyBeforeGeneration();
+    if (!apiKeyReady) return;
+    triggerSendLaunchAnimation();
+    void requestAgentModeExecution(submittedPrompt);
   }
 
   async function requestStartBatch() {
@@ -5132,13 +5588,17 @@ export default function App() {
     cancelAnalysisCountdown();
     setParams((current) => {
       const nextAspectRatio = patch.aspectRatio || current.aspectRatio;
-      const nextResolution = patch.resolution ? safeImageResolution(patch.resolution) : safeImageResolution(current.resolution);
+      const nextResolution = normalizeResolutionForRequest(
+        patch.resolution ? safeImageResolution(patch.resolution) : safeImageResolution(current.resolution),
+        apiConfig.protocol,
+        selectedModel,
+      );
       return {
         ...current,
         ...patch,
         aspectRatio: nextAspectRatio,
         resolution: nextResolution,
-        size: resolveSize(nextAspectRatio, nextResolution),
+        size: resolveRequestSize(nextAspectRatio, nextResolution, apiConfig.protocol, selectedModel),
         batchCount: patch.batchCount !== undefined
           ? clampNumber(Number(patch.batchCount), 1, 20)
           : current.batchCount,
@@ -5199,6 +5659,89 @@ export default function App() {
 
   function copyPrompt(text: string) {
     void navigator.clipboard.writeText(text);
+  }
+
+  async function imageSourceToDataUrl(item: Job | PreviewItem) {
+    const blob = "imageBlob" in item ? item.imageBlob : undefined;
+    if (blob) return blobToDataUrl(blob);
+    const url = (item as Job).imageUrl || (item as PreviewItem).url;
+    if (!url) throw new Error("没有可推荐的图片");
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("无法读取图片用于推荐");
+    return blobToDataUrl(await response.blob());
+  }
+
+  async function recommendToSquare(item: Job | PreviewItem) {
+    if (!canUseSquareIdentity) {
+      setSquareRecommendState((current) => ({
+        ...current,
+        [item.id]: { status: "error", message: "配置 API Key 后可推荐到广场" },
+      }));
+      return;
+    }
+    if (item.status !== "success") return;
+    setSquareRecommendState((current) => ({
+      ...current,
+      [item.id]: { status: "submitting", message: "正在压缩并推荐到广场..." },
+    }));
+    try {
+      const imageDataUrl = await imageSourceToDataUrl(item);
+      const thumbnail = await createSquareThumbnail(imageDataUrl, 1024);
+      const sourceType = item.agentId === "agent-mode-a"
+        ? "agent_mode"
+        : item.agentName
+          ? "industry_agent"
+          : "local_history";
+      const response = await fetch("/api/square/recommend", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiKey: apiConfig.apiKey,
+          imageId: item.id,
+          thumbnailDataUrl: thumbnail.dataUrl,
+          sourceImageMeta: {
+            imageId: item.id,
+            requestId: item.requestId,
+            model: item.model,
+            width: item.width || thumbnail.width,
+            height: item.height || thumbnail.height,
+            aspectRatio: item.params.aspectRatio,
+            pageLabel: item.agentScenario,
+          },
+          prompt: item.prompt,
+          params: item.params,
+          caption: item.agentScenario || item.prompt.replace(/\s+/g, " ").slice(0, 120),
+          sourceType,
+          reasonPlan: {
+            agentName: item.agentName,
+            agentScenario: item.agentScenario,
+            promptVariant: item.promptVariant,
+            compressedTo: "1K",
+          },
+        }),
+      });
+      const payload = await readApiJson<SquareRecommendResponse>(response, "/api/square/recommend");
+      if (!response.ok || !payload.ok) throw payload;
+      const message = payload.action === "replaced"
+        ? `已推荐，替换最早展示位 · 今日剩余 ${payload.remainingDailyQuota ?? 0}`
+        : `已推荐到广场 · 今日剩余 ${payload.remainingDailyQuota ?? 0}`;
+      setSquareRecommendState((current) => ({
+        ...current,
+        [item.id]: {
+          status: "success",
+          message,
+          itemId: payload.item?.id,
+        },
+      }));
+    } catch (error) {
+      setSquareRecommendState((current) => ({
+        ...current,
+        [item.id]: {
+          status: "error",
+          message: formatError(error),
+        },
+      }));
+    }
   }
 
   function removeReference(id: string) {
@@ -5298,13 +5841,18 @@ export default function App() {
     const recommendedRatio = typeof plan.recommendedParams.aspectRatio === "string"
       ? plan.recommendedParams.aspectRatio
       : params.aspectRatio;
-    const nextRatio = isAspectRatioSupported(apiConfig.protocol, recommendedRatio)
+    const nextRatio = isAspectRatioSupported(apiConfig.protocol, recommendedRatio, selectedModel)
       ? recommendedRatio
       : params.aspectRatio;
     return {
       ...params,
       aspectRatio: nextRatio,
-      size: resolveSize(nextRatio, safeImageResolution(params.resolution)),
+      size: resolveRequestSize(
+        nextRatio,
+        normalizeResolutionForRequest(safeImageResolution(params.resolution), apiConfig.protocol, selectedModel),
+        apiConfig.protocol,
+        selectedModel,
+      ),
       negativePrompt: plan.negativePrompt || params.negativePrompt,
     } as ImageParams;
   }
@@ -5394,6 +5942,13 @@ export default function App() {
     }
   }
 
+  function enterSquare() {
+    setActivePage("square");
+    if (window.location.hash !== "#square") {
+      window.history.pushState(null, "", "#square");
+    }
+  }
+
   function returnHome() {
     setActivePage("home");
     if (window.location.hash) {
@@ -5409,7 +5964,11 @@ export default function App() {
 
   const analysisResult = analysisState.result;
   const suggestedRatio = analysisResult?.suggestedParams.aspectRatio;
-  const suggestedSize = analysisResult?.suggestedParams.size || (suggestedRatio ? resolveSize(suggestedRatio, selectedResolution) : "");
+  const suggestedSize = analysisResult?.suggestedParams.size || (
+    suggestedRatio
+      ? resolveRequestSize(suggestedRatio, selectedResolution, apiConfig.protocol, selectedModel)
+      : ""
+  );
   const suggestedCount = analysisResult?.suggestedParams.count;
   const analysisSourceLabel = analysisResult?.source === "ai"
     ? `AI · ${analysisResult.analysisModel || preferredAnalysisModel}`
@@ -5426,7 +5985,20 @@ export default function App() {
     return (
       <>
         {frontendUpdateNotice}
-        <HomePage onEnter={enterStudio} onAdmin={enterAdmin} />
+        <HomePage onEnter={enterStudio} onSquare={enterSquare} onAdmin={enterAdmin} />
+      </>
+    );
+  }
+
+  if (activePage === "square") {
+    return (
+      <>
+        {frontendUpdateNotice}
+        <SquarePage
+          apiKey={apiConfig.apiKey}
+          onBackHome={returnHome}
+          onEnterStudio={enterStudio}
+        />
       </>
     );
   }
@@ -5542,6 +6114,10 @@ export default function App() {
             <button type="button" className="topbar-home-button" onClick={returnHome}>
               <WandSparkles size={15} />
               首页
+            </button>
+            <button type="button" className="topbar-home-button" onClick={enterSquare}>
+              <ExternalLink size={15} />
+              广场
             </button>
             <div className={`status-pill ${modelState.status}`}>
               {modelState.status === "ready" ? <Wifi size={16} /> : <Settings2 size={16} />}
@@ -5695,6 +6271,9 @@ export default function App() {
                       onPreview={() => previewCurrent(job)}
                       onDownload={() => downloadCurrent(job)}
                       onCopyPrompt={() => copyPrompt(job.prompt)}
+                      onRecommend={() => void recommendToSquare(job)}
+                      recommendState={squareRecommendState[job.id]}
+                      canRecommend={canUseSquareIdentity}
                     />
                   ))}
                 </div>
@@ -6018,6 +6597,7 @@ export default function App() {
                 setAgentModeBrochureDraft(null);
                 setAgentModeState({ status: "idle", message: "" });
               }}
+              onReanalyze={() => void requestAgentModeReanalysis()}
             />
           )}
           {!isAgentModeEnabled && showPromptPresets && (
@@ -6103,6 +6683,11 @@ export default function App() {
                           ? `${analysisSourceLabel} · 评分 ${analysisResult.score}`
                           : analysisState.error || "可以稍后重试"}
                   </span>
+                  {(analysisState.streamChunks || analysisState.streamCharacters) && (
+                    <small className="analysis-stream-progress">
+                      {`进度 · ${analysisState.streamChunks || 0} 段 / ${analysisState.streamCharacters || 0} 字`}
+                    </small>
+                  )}
                 </div>
                 <button
                   type="button"
@@ -6138,6 +6723,10 @@ export default function App() {
                   <span />
                   <span />
                 </div>
+              )}
+
+              {analysisState.streamPreview && (analysisState.status === "analyzing" || analysisState.status === "receiving") && (
+                <pre className="analysis-stream-preview">{analysisState.streamPreview}</pre>
               )}
 
               {analysisState.status === "error" && (
@@ -6388,6 +6977,7 @@ export default function App() {
                 message: "已取消自动拆解，请继续修改需求。",
               });
             }}
+            onReanalyze={() => void requestAgentModeReanalysis()}
             onConfirm={() => enqueueAgentModeJobs(agentModePendingPlan.jobs, {
               analysisResult: agentModePendingPlan,
               clearComposer: true,
@@ -6405,6 +6995,7 @@ export default function App() {
                 message: "已取消画册规划，请继续补充你的要求。",
               });
             }}
+            onReanalyze={() => void requestAgentModeReanalysis()}
             onGenerateBoards={() => submitBrochureStyleBoards(agentModeBrochureDraft)}
           />
         )}
@@ -6573,11 +7164,10 @@ export default function App() {
               value={params.aspectRatio}
               onChange={(event) => updateParams({ aspectRatio: event.target.value })}
             >
-              {ASPECT_RATIOS.map((ratio) => (
+              {supportedAspectOptions.map((ratio) => (
                 <option
                   key={ratio.value}
                   value={ratio.value}
-                  disabled={!isAspectRatioSupported(apiConfig.protocol, ratio.value)}
                 >
                   {ratio.label}
                 </option>
@@ -6593,10 +7183,11 @@ export default function App() {
             <span>分辨率</span>
             <select
               value={selectedResolution}
+              disabled={isOfficialGptImageSizeMode}
               onChange={(event) => updateParams({ resolution: event.target.value as ImageResolution })}
             >
               {IMAGE_RESOLUTIONS.map((item) => (
-                <option key={item.value} value={item.value}>
+                <option key={item.value} value={item.value} disabled={isOfficialGptImageSizeMode && item.value !== "1K"}>
                   {item.label}
                 </option>
               ))}
@@ -6605,7 +7196,7 @@ export default function App() {
           <div className="ratio-preview">
             <strong>{selectedResolution}</strong>
             <span>{selectedResolutionDefinition.hint}</span>
-            <small>尺寸会随宽高比自动换算</small>
+            <small>{isOfficialGptImageSizeMode ? "GPT Image 2 当前仅使用官方固定尺寸，不额外放大" : "尺寸会随宽高比自动换算"}</small>
           </div>
           <label>
             <span>质量</span>
@@ -6693,6 +7284,9 @@ export default function App() {
             );
           }}
           onCopyPrompt={() => copyPrompt(previewItem.prompt)}
+          onRecommend={() => void recommendToSquare(previewItem)}
+          recommendState={squareRecommendState[previewItem.id]}
+          canRecommend={canUseSquareIdentity}
         />
       )}
       {pendingDeleteIds && (
@@ -6735,10 +7329,12 @@ function AdminApp({
   const [passwordForm, setPasswordForm] = useState({ oldPassword: "", newPassword: "", confirmPassword: "" });
   const [adminError, setAdminError] = useState("");
   const [stats, setStats] = useState<AdminStats | null>(null);
+  const [squareOverview, setSquareOverview] = useState<SquareAdminOverview | null>(null);
   const [logs, setLogs] = useState<AdminRequestLog[]>([]);
   const [logStatus, setLogStatus] = useState("");
   const [logQuery, setLogQuery] = useState("");
   const [isLoadingLogs, setIsLoadingLogs] = useState(false);
+  const [isExportingSquare, setIsExportingSquare] = useState(false);
   const [expandedLogId, setExpandedLogId] = useState("");
 
   useEffect(() => {
@@ -6754,6 +7350,22 @@ function AdminApp({
 
   async function adminFetch<T>(path: string, init: RequestInit = {}) {
     const response = await fetch(`/api/admin${path}`, {
+      ...init,
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json",
+        ...(init.headers || {}),
+      },
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) {
+      throw payload;
+    }
+    return payload as T;
+  }
+
+  async function squareAdminFetch<T>(path: string, init: RequestInit = {}) {
+    const response = await fetch(`/api/square/admin${path}`, {
       ...init,
       credentials: "same-origin",
       headers: {
@@ -6787,6 +7399,31 @@ function AdminApp({
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (error) {
       setAdminError(formatError(error));
+    }
+  }
+
+  async function exportSquareLogs(format: "json" | "csv" = "json") {
+    setAdminError("");
+    setIsExportingSquare(true);
+    try {
+      const response = await fetch(`/api/square/admin/export?format=${format}`, {
+        method: "GET",
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        throw detail || new Error(`HTTP ${response.status}`);
+      }
+      const blob = await response.blob();
+      const dispositionFilename = response.headers.get("content-disposition")?.match(/filename="([^"]+)"/)?.[1];
+      const filename = dispositionFilename || `imagehub-square-audit-${new Date().toISOString().replace(/[:.]/g, "-")}.${format}`;
+      const url = URL.createObjectURL(blob);
+      downloadUrl(url, filename);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      setAdminError(formatError(error));
+    } finally {
+      setIsExportingSquare(false);
     }
   }
 
@@ -6851,12 +7488,14 @@ function AdminApp({
       const query = new URLSearchParams();
       if (logStatus) query.set("status", logStatus);
       if (logQuery.trim()) query.set("q", logQuery.trim());
-      const [statsPayload, logsPayload] = await Promise.all([
+      const [statsPayload, logsPayload, squarePayload] = await Promise.all([
         adminFetch<{ ok: true; stats: AdminStats }>("/stats"),
         adminFetch<{ ok: true; logs: AdminRequestLog[] }>(`/requests?${query.toString()}`),
+        squareAdminFetch<{ ok: true; overview: SquareAdminOverview }>("/overview"),
       ]);
       setStats(statsPayload.stats);
       setLogs(logsPayload.logs);
+      setSquareOverview(squarePayload.overview);
       setExpandedLogId((current) =>
         logsPayload.logs.some((log) => log.requestId === current) ? current : "",
       );
@@ -6876,6 +7515,7 @@ function AdminApp({
     } finally {
       setUser(null);
       setStats(null);
+      setSquareOverview(null);
       setLogs([]);
       setAdminError("");
     }
@@ -6889,6 +7529,9 @@ function AdminApp({
     () => Object.entries(stats?.errorCounts || {}).sort((a, b) => b[1] - a[1]).slice(0, 4),
     [stats],
   );
+  const squareLastTrend = squareOverview?.trend[squareOverview.trend.length - 1];
+  const squareTopReasons = squareOverview?.rejectedReasonTop.slice(0, 4) || [];
+  const squareRiskEvents = squareOverview?.riskEvents.slice(0, 4) || [];
 
   if (isChecking) {
     return (
@@ -7024,6 +7667,10 @@ function AdminApp({
         <AdminStatCard label="成功率" value={`${stats?.successRate ?? 0}%`} tone="success" />
         <AdminStatCard label="失败" value={stats?.error ?? 0} tone="error" />
         <AdminStatCard label="平均耗时" value={formatCompactDuration(stats?.avgDurationMs ?? 0)} />
+        <AdminStatCard label="广场展示" value={squareOverview?.activeItems ?? 0} />
+        <AdminStatCard label="推荐尝试" value={squareOverview?.totalRecommendAttempts ?? 0} />
+        <AdminStatCard label="替换率" value={`${squareOverview?.replacementRate ?? 0}%`} />
+        <AdminStatCard label="广场点赞" value={squareOverview?.totalLikes ?? 0} tone="success" />
       </section>
 
       <section className="admin-insight-grid">
@@ -7058,6 +7705,67 @@ function AdminApp({
               </div>
             ))
           )}
+        </article>
+        <article className="admin-panel admin-square-panel">
+          <div className="admin-panel-title admin-panel-title-spread">
+            <div>
+              <Star size={17} />
+              <strong>广场治理</strong>
+            </div>
+            <div className="admin-panel-actions">
+              <button type="button" className="subtle-button" onClick={() => void exportSquareLogs("csv")} disabled={isExportingSquare}>
+                {isExportingSquare ? <Loader2 size={15} className="spin" /> : <DownloadCloud size={15} />}
+                导出今日 CSV
+              </button>
+              <button type="button" className="subtle-button" onClick={() => void exportSquareLogs("json")} disabled={isExportingSquare}>
+                <DownloadCloud size={15} />
+                导出今日 JSON
+              </button>
+            </div>
+          </div>
+          <div className="admin-square-grid">
+            <div>
+              <strong>今日趋势</strong>
+              <div className="admin-rank-row">
+                <span>{squareLastTrend?.dateKey || "今日"}</span>
+                <strong>{squareLastTrend ? `${squareLastTrend.recommendAttempts} 推荐 · ${squareLastTrend.likes} 赞` : "-"}</strong>
+              </div>
+              <div className="admin-rank-row">
+                <span>新增 / 替换 / 拒绝</span>
+                <strong>{squareLastTrend ? `${squareLastTrend.added} / ${squareLastTrend.replaced} / ${squareLastTrend.rejected}` : "0 / 0 / 0"}</strong>
+              </div>
+              <div className="admin-rank-row">
+                <span>平均点赞</span>
+                <strong>{squareOverview?.likeRate ?? 0}</strong>
+              </div>
+            </div>
+            <div>
+              <strong>拒绝原因 Top</strong>
+              {squareTopReasons.length === 0 ? (
+                <p className="admin-muted">暂无拒绝记录</p>
+              ) : (
+                squareTopReasons.map((reason) => (
+                  <div className="admin-rank-row" key={reason.reasonCode}>
+                    <span title={reason.reasonCode}>{reason.reasonCode}</span>
+                    <strong>{reason.count}</strong>
+                  </div>
+                ))
+              )}
+            </div>
+            <div>
+              <strong>风控事件</strong>
+              {squareRiskEvents.length === 0 ? (
+                <p className="admin-muted">暂无风控事件</p>
+              ) : (
+                squareRiskEvents.map((event) => (
+                  <div className="admin-rank-row" key={event.id}>
+                    <span title={`${event.event} · ${event.reasonCode}`}>{event.severity} · {event.reasonCode}</span>
+                    <strong>{formatFullDate(event.timestamp)}</strong>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
         </article>
       </section>
 
@@ -7232,7 +7940,7 @@ function AdminJsonBlock({ title, value }: { title: string; value: unknown }) {
   );
 }
 
-function HomePage({ onEnter, onAdmin }: { onEnter: () => void; onAdmin: () => void }) {
+function HomePage({ onEnter, onSquare, onAdmin }: { onEnter: () => void; onSquare: () => void; onAdmin: () => void }) {
   const featureBands = [
     {
       title: "统一记录流",
@@ -7287,6 +7995,9 @@ function HomePage({ onEnter, onAdmin }: { onEnter: () => void; onAdmin: () => vo
             <button type="button" onClick={() => scrollToSection("home-agents")}>
               行业 Agent
             </button>
+            <button type="button" onClick={onSquare}>
+              广场
+            </button>
             <button type="button" onClick={() => scrollToSection("home-local")}>
               本地优先
             </button>
@@ -7294,6 +8005,9 @@ function HomePage({ onEnter, onAdmin }: { onEnter: () => void; onAdmin: () => vo
           <div className="home-nav-actions">
             <button type="button" className="home-nav-action" onClick={onEnter}>
               打开工作台
+            </button>
+            <button type="button" className="home-nav-action" onClick={onSquare}>
+              进入广场
             </button>
             <button type="button" className="home-admin-link" onClick={onAdmin}>
               <ShieldCheck size={16} />
@@ -7315,6 +8029,9 @@ function HomePage({ onEnter, onAdmin }: { onEnter: () => void; onAdmin: () => vo
             </button>
             <button type="button" className="home-secondary" onClick={() => scrollToSection("home-flow")}>
               了解流程
+            </button>
+            <button type="button" className="home-secondary" onClick={onSquare}>
+              浏览广场
             </button>
           </div>
           <div className="home-metric-row" aria-label="产品能力摘要">
@@ -7420,6 +8137,295 @@ function HomePage({ onEnter, onAdmin }: { onEnter: () => void; onAdmin: () => vo
         </button>
       </section>
     </main>
+  );
+}
+
+function SquarePage({
+  apiKey,
+  onBackHome,
+  onEnterStudio,
+}: {
+  apiKey: string;
+  onBackHome: () => void;
+  onEnterStudio: () => void;
+}) {
+  const [tab, setTab] = useState<SquareFeedTab>("latest");
+  const [items, setItems] = useState<SquareFeedItem[]>([]);
+  const [cursor, setCursor] = useState("");
+  const [hasMore, setHasMore] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [quota, setQuota] = useState<SquareQuotaResponse | null>(null);
+  const [pendingLikeIds, setPendingLikeIds] = useState<Set<string>>(() => new Set());
+  const pageRef = useRef<HTMLElement | null>(null);
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
+  const apiKeyReady = apiKey.trim().length >= API_KEY_MIN_LENGTH;
+
+  async function fetchQuota() {
+    if (!apiKeyReady) {
+      setQuota(null);
+      return;
+    }
+    try {
+      const query = new URLSearchParams({ apiKey });
+      const response = await fetch(`/api/square/quota?${query.toString()}`);
+      const payload = await readApiJson<SquareQuotaResponse>(response, "/api/square/quota");
+      if (!response.ok || !payload.ok) throw payload;
+      setQuota(payload);
+    } catch {
+      setQuota(null);
+    }
+  }
+
+  async function loadFeed(reset = false) {
+    if (isLoading) return;
+    if (!reset && !hasMore) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      const query = new URLSearchParams({
+        tab,
+        limit: String(SQUARE_PAGE_SIZE),
+      });
+      if (!reset && cursor) query.set("cursor", cursor);
+      if (apiKeyReady) query.set("apiKey", apiKey);
+      const response = await fetch(`/api/square/feed?${query.toString()}`);
+      const payload = await readApiJson<SquareFeedResponse>(response, "/api/square/feed");
+      if (!response.ok || !payload.ok) throw payload;
+      setItems((current) => reset ? payload.items : mergeSquareItems(current, payload.items));
+      setCursor(payload.nextCursor || "");
+      setHasMore(payload.hasMore);
+    } catch (loadError) {
+      setError(formatError(loadError));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    setItems([]);
+    setCursor("");
+    setHasMore(true);
+    void loadFeed(true);
+    void fetchQuota();
+  }, [tab, apiKey]);
+
+  useEffect(() => {
+    const marker = loadMoreRef.current;
+    const root = pageRef.current;
+    if (!marker || !root || !hasMore || isLoading) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) void loadFeed(false);
+      },
+      { root, rootMargin: "420px 0px", threshold: 0 },
+    );
+    observer.observe(marker);
+    return () => observer.disconnect();
+  }, [items.length, hasMore, isLoading, cursor, tab, apiKey]);
+
+  async function toggleLike(item: SquareFeedItem) {
+    if (!apiKeyReady) {
+      setError("配置 API Key 后可点赞");
+      return;
+    }
+    setPendingLikeIds((current) => new Set(current).add(item.id));
+    setError("");
+    try {
+      const action = item.likedByRequester ? "unlike" : "like";
+      const response = await fetch("/api/square/like", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey, itemId: item.id, action }),
+      });
+      const payload = await readApiJson<SquareLikeResponse>(response, "/api/square/like");
+      if (!response.ok || !payload.ok) throw payload;
+      setItems((current) => current.map((candidate) =>
+        candidate.id === item.id
+          ? {
+            ...candidate,
+            likeCount: typeof payload.likeCount === "number" ? payload.likeCount : candidate.likeCount,
+            likedByRequester: payload.status === "liked" ? true : payload.status === "unliked" ? false : candidate.likedByRequester,
+          }
+          : candidate,
+      ));
+      void fetchQuota();
+    } catch (likeError) {
+      setError(formatError(likeError));
+    } finally {
+      setPendingLikeIds((current) => {
+        const next = new Set(current);
+        next.delete(item.id);
+        return next;
+      });
+    }
+  }
+
+  return (
+    <main className="square-page" ref={pageRef}>
+      <header className="square-topbar">
+        <button type="button" className="home-brand square-brand" onClick={onBackHome}>
+          <span>
+            <img src={imageStudioLogo} alt="" />
+          </span>
+          <strong>ImageHub Square</strong>
+        </button>
+        <div className="square-topbar-actions">
+          <button type="button" className="subtle-button" onClick={onEnterStudio}>
+            <WandSparkles size={16} />
+            工作台
+          </button>
+          <button type="button" className="subtle-button" onClick={onBackHome}>
+            首页
+          </button>
+        </div>
+      </header>
+
+      <section className="square-hero">
+        <div>
+          <span className="home-kicker">Square</span>
+          <h1>广场</h1>
+          <p>这里展示被推荐出来的 1K 创作缩略图。点赞、推荐和替换都由服务端记录配额与日志。</p>
+        </div>
+        <div className="square-quota-strip" aria-label="广场配额">
+          <span>{apiKeyReady ? "API Key 已配置" : "未配置 API Key"}</span>
+          <strong>{quota ? `${quota.shelfCount}/${quota.shelfLimit}` : "-/4"}</strong>
+          <small>展示位</small>
+          <strong>{quota ? quota.dailyRecommendLeft : "-"}</strong>
+          <small>今日推荐剩余</small>
+          <strong>{quota ? quota.dailyLikeLeft : "-"}</strong>
+          <small>今日点赞剩余</small>
+        </div>
+      </section>
+
+      <section className="square-controls">
+        <div className="square-tabs" role="tablist" aria-label="广场排序">
+          {SQUARE_FEED_TABS.map((item) => {
+            const Icon = item.icon;
+            return (
+              <button
+                key={item.value}
+                type="button"
+                role="tab"
+                aria-selected={tab === item.value}
+                className={tab === item.value ? "active" : ""}
+                onClick={() => setTab(item.value)}
+              >
+                <Icon size={15} />
+                {item.label}
+              </button>
+            );
+          })}
+        </div>
+        <button type="button" className="subtle-button" onClick={() => void loadFeed(true)} disabled={isLoading}>
+          {isLoading ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
+          刷新
+        </button>
+      </section>
+
+      {error && (
+        <div className="square-alert">
+          <AlertCircle size={16} />
+          <span>{error}</span>
+        </div>
+      )}
+
+      <section className="square-grid" aria-label="广场作品">
+        {items.map((item) => (
+          <SquareCard
+            key={item.id}
+            item={item}
+            apiKeyReady={apiKeyReady}
+            pendingLike={pendingLikeIds.has(item.id)}
+            onLike={() => void toggleLike(item)}
+            onCopyPrompt={() => void navigator.clipboard.writeText(item.prompt)}
+          />
+        ))}
+        {isLoading && Array.from({ length: Math.max(4, SQUARE_PAGE_SIZE / 4) }, (_, index) => (
+          <div className="square-card square-skeleton" key={`square-skeleton-${index}`}>
+            <span />
+            <div />
+          </div>
+        ))}
+      </section>
+
+      {!isLoading && items.length === 0 && (
+        <div className="square-empty">
+          <ImagePlus size={26} />
+          <strong>广场还没有作品</strong>
+          <span>在工作台生成成功后，点击结果左下角的推荐按钮即可上架。</span>
+          <button type="button" className="primary-action compact" onClick={onEnterStudio}>
+            <WandSparkles size={15} />
+            去生成
+          </button>
+        </div>
+      )}
+
+      {hasMore && <div ref={loadMoreRef} className="load-more-sentinel" />}
+      {isLoading && <div className="load-more-state">加载中...</div>}
+      {!hasMore && items.length > 0 && <div className="load-more-state">已经到底了</div>}
+    </main>
+  );
+}
+
+function mergeSquareItems(current: SquareFeedItem[], incoming: SquareFeedItem[]) {
+  const seen = new Set(current.map((item) => item.id));
+  return [...current, ...incoming.filter((item) => !seen.has(item.id))];
+}
+
+function SquareCard({
+  item,
+  apiKeyReady,
+  pendingLike,
+  onLike,
+  onCopyPrompt,
+}: {
+  item: SquareFeedItem;
+  apiKeyReady: boolean;
+  pendingLike: boolean;
+  onLike: () => void;
+  onCopyPrompt: () => void;
+}) {
+  const params = item.params || {};
+  const sizeLabel = item.width && item.height ? `${item.width} x ${item.height}` : String(params.size || "-");
+  return (
+    <article className="square-card">
+      <a className="square-card-image" href={item.thumbnailDataUrl} target="_blank" rel="noreferrer" title="打开展示图">
+        <img src={item.thumbnailDataUrl} alt={item.caption || item.prompt} loading="lazy" decoding="async" />
+        <span>{item.pageLabel || item.recommenderLabel}</span>
+      </a>
+      <div className="square-card-body">
+        <div className="square-card-title">
+          <strong title={item.caption || item.prompt}>{item.caption || "未命名作品"}</strong>
+          <small>{formatDate(item.createdAt)} · {item.recommenderLabel}</small>
+        </div>
+        <div className="square-card-tags">
+          <span>{item.model}</span>
+          <span>{String(params.aspectRatio || item.aspectRatio || "-")}</span>
+          <span>{String(params.resolution || DEFAULT_IMAGE_RESOLUTION)}</span>
+          <span>{sizeLabel}</span>
+        </div>
+        <p title={item.prompt}>{item.prompt}</p>
+        <div className="square-card-actions">
+          <button
+            type="button"
+            className={`square-like-button ${item.likedByRequester ? "liked" : ""}`}
+            disabled={!apiKeyReady || pendingLike}
+            title={apiKeyReady ? item.likedByRequester ? "取消点赞" : "点赞" : "配置 API Key 后可点赞"}
+            onClick={onLike}
+          >
+            {pendingLike ? <Loader2 size={15} className="spin" /> : <Heart size={15} />}
+            <span>{item.likeCount}</span>
+          </button>
+          <button type="button" className="icon-button" title="复制提示词" onClick={onCopyPrompt}>
+            <Copy size={15} />
+          </button>
+          <a className="icon-button" title="打开展示图" href={item.thumbnailDataUrl} target="_blank" rel="noreferrer">
+            <ExternalLink size={15} />
+          </a>
+        </div>
+      </div>
+    </article>
   );
 }
 
@@ -7596,6 +8602,9 @@ const JobCard = memo(function JobCard({
   onPreview,
   onDownload,
   onCopyPrompt,
+  onRecommend,
+  recommendState,
+  canRecommend,
 }: {
   job: Job;
   highlighted: boolean;
@@ -7608,6 +8617,9 @@ const JobCard = memo(function JobCard({
   onPreview: () => void;
   onDownload: () => void;
   onCopyPrompt: () => void;
+  onRecommend: () => void;
+  recommendState?: SquareRecommendStatus;
+  canRecommend: boolean;
 }) {
   const [tickNow, setTickNow] = useState(() => Date.now());
   useEffect(() => {
@@ -7683,6 +8695,21 @@ const JobCard = memo(function JobCard({
             </div>
           </div>
         )}
+        {job.status === "success" && job.imageUrl && (
+          <button
+            type="button"
+            className={`tile-square-action ${recommendState?.status || ""}`}
+            title={canRecommend ? recommendState?.message || "推荐到广场" : "配置 API Key 后可推荐到广场"}
+            disabled={!canRecommend || recommendState?.status === "submitting"}
+            onClick={(event) => {
+              event.stopPropagation();
+              onRecommend();
+            }}
+          >
+            {recommendState?.status === "submitting" ? <Loader2 size={13} className="spin" /> : <ExternalLink size={13} />}
+            <span>{recommendState?.status === "success" ? "已推荐" : recommendState?.status === "submitting" ? "推荐中" : "推荐广场"}</span>
+          </button>
+        )}
       </div>
 
       <div className="tile-body">
@@ -7757,7 +8784,9 @@ const JobCard = memo(function JobCard({
   previous.highlighted === next.highlighted &&
   previous.selected === next.selected &&
   previous.selectionMode === next.selectionMode &&
-  previous.selectable === next.selectable
+  previous.selectable === next.selectable &&
+  previous.recommendState === next.recommendState &&
+  previous.canRecommend === next.canRecommend
 );
 
 function SidebarToggleButton({
@@ -7932,12 +8961,14 @@ function AgentModeSwitch({
 function AgentModeStatusPanel({
   state,
   onClear,
+  onReanalyze,
 }: {
   state: AgentModeState;
   onClear: () => void;
+  onReanalyze: () => void;
 }) {
   if (!state.message && state.status === "idle") return null;
-  const icon = state.status === "analyzing" || state.status === "executing"
+  const icon = state.status === "analyzing" || state.status === "receiving" || state.status === "executing"
     ? <Loader2 size={16} className="spin" />
     : state.status === "error"
       ? <AlertCircle size={16} />
@@ -7952,6 +8983,8 @@ function AgentModeStatusPanel({
           <strong>
             {state.status === "analyzing"
               ? "正在理解任务"
+              : state.status === "receiving"
+                ? "AI 输出中"
               : state.status === "needs_confirmation"
                 ? "等待确认"
                 : state.status === "planned"
@@ -7963,14 +8996,30 @@ function AgentModeStatusPanel({
                       : AGENT_MODE_NAME}
           </strong>
           <span>{state.message}</span>
+          {(state.streamChunks || state.streamCharacters) && (
+            <small className="agent-mode-status-progress">
+              {`进度 · ${state.streamChunks || 0} 段 / ${state.streamCharacters || 0} 字`}
+            </small>
+          )}
+          {state.streamPreview && (
+            <pre className="agent-mode-status-stream">{state.streamPreview}</pre>
+          )}
           {state.error && <small>{state.error}</small>}
         </div>
       </div>
-      {state.status !== "analyzing" && (
-        <button type="button" className="icon-button" title="清除 Agent 状态" onClick={onClear}>
-          <X size={15} />
-        </button>
-      )}
+      <div className="agent-mode-status-actions">
+        {(state.status === "planned" || state.status === "needs_confirmation" || state.status === "error") && (
+          <button type="button" className="subtle-button" title="重新分析当前需求" onClick={onReanalyze}>
+            <RefreshCw size={15} />
+            重新分析
+          </button>
+        )}
+        {state.status !== "analyzing" && state.status !== "receiving" && (
+          <button type="button" className="icon-button" title="清除 Agent 状态" onClick={onClear}>
+            <X size={15} />
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -7979,10 +9028,12 @@ function AgentModePlanModal({
   plan,
   onCancel,
   onConfirm,
+  onReanalyze,
 }: {
   plan: AgentModeAnalysisResult;
   onCancel: () => void;
   onConfirm: () => void;
+  onReanalyze: () => void;
 }) {
   return (
     <div className="confirm-modal" role="dialog" aria-modal="true" aria-label="Agent 任务拆解">
@@ -8010,6 +9061,10 @@ function AgentModePlanModal({
           ))}
         </div>
         <div className="confirm-actions">
+          <button type="button" className="subtle-button" onClick={onReanalyze}>
+            <RefreshCw size={15} />
+            重新分析
+          </button>
           <button type="button" className="subtle-button" onClick={onCancel}>
             返回编辑
           </button>
@@ -8027,10 +9082,12 @@ function BrochurePlannerModal({
   project,
   onCancel,
   onGenerateBoards,
+  onReanalyze,
 }: {
   project: AgentModeBrochureProject;
   onCancel: () => void;
   onGenerateBoards: () => void;
+  onReanalyze: () => void;
 }) {
   return (
     <div className="confirm-modal" role="dialog" aria-modal="true" aria-label="宣传画册规划">
@@ -8071,6 +9128,10 @@ function BrochurePlannerModal({
           </div>
         </div>
         <div className="confirm-actions">
+          <button type="button" className="subtle-button" onClick={onReanalyze}>
+            <RefreshCw size={15} />
+            重新分析
+          </button>
           <button type="button" className="subtle-button" onClick={onCancel}>
             稍后再说
           </button>
@@ -8253,11 +9314,17 @@ function ImagePreviewModal({
   onClose,
   onDownload,
   onCopyPrompt,
+  onRecommend,
+  recommendState,
+  canRecommend,
 }: {
   item: PreviewItem;
   onClose: () => void;
   onDownload: () => void;
   onCopyPrompt: () => void;
+  onRecommend: () => void;
+  recommendState?: SquareRecommendStatus;
+  canRecommend: boolean;
 }) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const previewClass = aspectClass(item.width, item.height, item.params.aspectRatio);
@@ -8302,6 +9369,21 @@ function ImagePreviewModal({
               <button type="button" className="icon-button" onClick={() => setIsFullscreen(false)} title="退出全屏">
                 <X size={17} />
               </button>
+            </div>
+          )}
+          {hasImage && (
+            <div className="preview-square-toolbar">
+              <button
+                type="button"
+                className={`subtle-button ${recommendState?.status === "success" ? "square-success" : ""}`}
+                title={canRecommend ? recommendState?.message || "推荐到广场" : "配置 API Key 后可推荐到广场"}
+                disabled={!canRecommend || recommendState?.status === "submitting"}
+                onClick={onRecommend}
+              >
+                {recommendState?.status === "submitting" ? <Loader2 size={15} className="spin" /> : <ExternalLink size={15} />}
+                {recommendState?.status === "success" ? "已推荐到广场" : recommendState?.status === "submitting" ? "推荐中" : "推荐到广场"}
+              </button>
+              {recommendState?.message && <span>{recommendState.message}</span>}
             </div>
           )}
         </div>
