@@ -640,18 +640,53 @@ const SQUARE_FEED_TABS: Array<{ value: SquareFeedTab; label: string; icon: typeo
 const CURRENT_FRONTEND_VERSION = typeof __FRONTEND_BUILD_VERSION__ === "string"
   ? __FRONTEND_BUILD_VERSION__
   : "dev";
-const ALLOWED_API_ENDPOINTS = [
-  {
-    value: "https://www.taijiai.online/",
-    label: "太极 AI",
-    description: "主服务地址",
-  },
-  {
-    value: "https://bobdong.cn/",
-    label: "BobDong",
-    description: "备用服务地址",
-  },
-] as const;
+type AllowedApiEndpoint = {
+  value: string;
+  label: string;
+  description: string;
+};
+
+function normalizeEndpointValue(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  return `${trimmed.replace(/\/+$/, "")}/`;
+}
+
+function parseAllowedApiEndpoints(): AllowedApiEndpoint[] {
+  const fallback: AllowedApiEndpoint[] = [
+    {
+      value: "https://www.taijiai.online/",
+      label: "太极 AI",
+      description: "主服务地址",
+    },
+    {
+      value: "https://bobdong.cn/",
+      label: "BobDong",
+      description: "备用服务地址",
+    },
+  ];
+  const raw = import.meta.env.VITE_ALLOWED_API_ENDPOINTS;
+  if (typeof raw !== "string" || !raw.trim()) return fallback;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return fallback;
+    const endpoints = parsed
+      .map((item) => {
+        if (!item || typeof item !== "object") return null;
+        const value = normalizeEndpointValue(String((item as Record<string, unknown>).value || ""));
+        if (!value) return null;
+        const label = String((item as Record<string, unknown>).label || value);
+        const description = String((item as Record<string, unknown>).description || "自定义服务地址");
+        return { value, label, description };
+      })
+      .filter((item): item is AllowedApiEndpoint => Boolean(item));
+    return endpoints.length ? endpoints : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+const ALLOWED_API_ENDPOINTS = parseAllowedApiEndpoints();
 const DEFAULT_API_URL = ALLOWED_API_ENDPOINTS[0].value;
 const DEFAULT_PROTOCOL: ImageProtocol = "custom-openai";
 const DEFAULT_IMAGE_RESOLUTION: ImageResolution = "1K";
@@ -1156,6 +1191,50 @@ const INDUSTRY_AGENTS: IndustryAgent[] = [
       commercial: "强调专业可信的形象照质感，光线高级，构图稳重，适合商务和品牌展示。",
     },
     qualityChecklist: ["五官自然", "肤色真实", "手部不异常", "表情放松", "光线高级"],
+  },
+  {
+    id: "medical-beauty",
+    name: "医美行业",
+    tag: "高客单转化",
+    icon: "美",
+    scenario: "项目海报 / 机构宣传图 / 医生 IP / 案例种草",
+    description: "围绕医美获客场景补全专业感、洁净感、信任感和平台合规表达。",
+    recommendedRatio: "4:5",
+    defaultCount: 4,
+    defaultQuality: "high",
+    defaultSubject: "轻医美抗衰项目宣传主视觉",
+    defaultGoal: "生成适合医美机构推广、项目种草和医生 IP 展示的高信任感宣传图。",
+    defaultScene: "明亮洁净的医美咨询空间，人物状态自然专业，画面有留白可放标题。",
+    defaultAudience: "有抗衰、护肤、轮廓管理需求的高消费女性与医美咨询用户。",
+    clickHint: "打开医美行业工作流",
+    emptyStateHint: "不填写也会默认生成轻医美抗衰项目的机构宣传方案。",
+    defaultValues: {
+      projectType: "轻医美抗衰项目",
+      campaignGoal: "吸引高意向用户咨询并建立专业信任感",
+      audience: "25-40 岁关注皮肤状态与轮廓管理的女性用户",
+      subject: "专业医生与自然高级女性形象",
+      scene: "明亮洁净诊疗咨询空间",
+      tone: "专业可信",
+      compliance: "弱化夸张疗效，强调专业与自然改善",
+    },
+    promptBlueprint: "医美项目类型 + 核心卖点 + 目标客群 + 医生或模特主体 + 洁净空间 + 信任感光线 + 文案留白 + 平台合规表达",
+    negativePrompt: `${COMMON_AGENT_NEGATIVE_PROMPT}，夸张整形效果，血腥医疗场景，恐怖器械特写，过度裸露，低俗营销感，术后创口，前后对比拼贴，虚假疗效承诺`,
+    fields: [
+      { id: "projectType", label: "项目类型", type: "select", options: ["轻医美抗衰", "皮肤管理", "水光补水", "面部年轻化", "轮廓提升", "机构品牌宣传"], defaultValue: "轻医美抗衰" },
+      { id: "campaignGoal", label: "推广目标", type: "text", required: true, placeholder: "获客咨询、项目种草、节日活动、医生 IP 打造" },
+      { id: "audience", label: "目标客群", type: "text", placeholder: "例如：30+ 轻熟龄女性、高净值白领、初次医美用户" },
+      { id: "subject", label: "主体设定", type: "textarea", placeholder: "专业医生、顾问、自然高级女性形象、局部皮肤状态展示" },
+      { id: "scene", label: "场景", type: "select", options: ["明亮洁净诊疗空间", "高端咨询室", "极简白色摄影棚", "皮肤检测体验区", "医生专业肖像背景"], defaultValue: "明亮洁净诊疗空间" },
+      { id: "tone", label: "调性", type: "select", options: ["专业可信", "温柔安心", "高端轻奢", "科技抗衰", "自然高级"], defaultValue: "专业可信" },
+      { id: "compliance", label: "表达要求", type: "select", options: ["弱化夸张疗效，强调专业与自然改善", "突出咨询体验与服务感", "强调医生专业度与审美", "强调皮肤状态管理与长期主义"], defaultValue: "弱化夸张疗效，强调专业与自然改善" },
+    ],
+    supplements: ["洁净高级环境", "专业可信人物状态", "留白可叠加标题", "弱化夸张疗效", "平台友好表达"],
+    promptStructures: {
+      stable: "医美机构宣传主视觉，明亮洁净空间，专业医生或自然高级女性形象，肤质细腻真实，光线柔和，画面高级克制，留有可放标题的安全区域，突出专业、安心、自然改善感。",
+      creative: "在保持专业可信的前提下，加入更有记忆点的高端审美元素、轻科技光影和细腻情绪氛围，让医美项目更具高级种草感。",
+      commercial: "强调广告可交付与平台合规，人物自然不过度修饰，信息留白清楚，品牌质感统一，适合机构海报、项目招商页和私域转化素材。",
+    },
+    qualityChecklist: ["人物状态自然", "肤质真实不过度磨皮", "环境洁净专业", "无夸张疗效暗示", "适合医美推广与种草"],
   },
   {
     id: "food-photo",

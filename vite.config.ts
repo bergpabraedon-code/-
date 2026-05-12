@@ -260,7 +260,6 @@ type SquareStore = {
 const API_TIMEOUT_MS = 300_000;
 const MAX_REQUEST_BYTES = 60 * 1024 * 1024;
 const DEFAULT_PROTOCOL: ImageProtocol = "custom-openai";
-const ALLOWED_API_BASE_URLS = ["https://www.taijiai.online/", "https://bobdong.cn/"];
 const SESSION_COOKIE = "image_studio_admin_session";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
 const DATA_DIR = join(process.cwd(), ".data");
@@ -268,7 +267,7 @@ const ADMIN_STORE_PATH = join(DATA_DIR, "admin-store.json");
 const SQUARE_STORE_PATH = join(DATA_DIR, "square-store.json");
 const FRONTEND_VERSION_PATHS = ["src", "index.html", "package.json", "vite.config.ts"];
 const REFERENCE_TEMP_TTL_MS = 1000 * 60 * 10;
-const PUBLIC_REFERENCE_BASE_URL = "https://imagehub.taijiai.online";
+const DEFAULT_DEV_PORT = 8877;
 const SQUARE_TIME_ZONE = "Asia/Shanghai";
 const SQUARE_SHELF_LIMIT = 4;
 const SQUARE_DAILY_RECOMMEND_LIMIT = 10;
@@ -315,6 +314,35 @@ function createFrontendBuildVersion() {
   return formatFrontendVersion(latest || Date.now());
 }
 
+function normalizeEndpointValue(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  return `${trimmed.replace(/\/+$/, "")}/`;
+}
+
+function parseAllowedApiBaseUrls() {
+  const fallback = ["https://www.taijiai.online/", "https://bobdong.cn/"];
+  const envValue = process.env.ALLOWED_API_BASE_URLS;
+  if (!envValue?.trim()) return fallback;
+  const normalized = envValue
+    .split(",")
+    .map((item) => normalizeEndpointValue(item))
+    .filter(Boolean);
+  return normalized.length ? normalized : fallback;
+}
+
+function resolvePublicReferenceBaseUrl() {
+  return (process.env.PUBLIC_REFERENCE_BASE_URL || "https://imagehub.taijiai.online").replace(/\/+$/, "");
+}
+
+function resolveAppPort() {
+  const parsed = Number.parseInt(process.env.PORT || "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_DEV_PORT;
+}
+
+const ALLOWED_API_BASE_URLS = parseAllowedApiBaseUrls();
+const PUBLIC_REFERENCE_BASE_URL = resolvePublicReferenceBaseUrl();
+const APP_PORT = resolveAppPort();
 const FRONTEND_BUILD_VERSION = createFrontendBuildVersion();
 const FRONTEND_BUILD_INFO = {
   version: FRONTEND_BUILD_VERSION,
@@ -4113,12 +4141,12 @@ export default defineConfig({
   },
   server: {
     host: "0.0.0.0",
-    port: 8877,
+    port: APP_PORT,
     strictPort: true,
   },
   preview: {
     host: "0.0.0.0",
-    port: 8877,
+    port: APP_PORT,
     strictPort: true,
   },
 });
