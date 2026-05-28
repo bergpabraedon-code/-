@@ -140,6 +140,39 @@ begin
 end;
 $$;
 
+create or replace function public.ensure_platform_user(p_email text default null)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  resolved_email text;
+begin
+  if auth.uid() is null then
+    raise exception 'not_authenticated';
+  end if;
+
+  resolved_email := nullif(coalesce(p_email, ''), '');
+  if resolved_email is null then
+    resolved_email := nullif(coalesce(auth.jwt() ->> 'email', ''), '');
+  end if;
+
+  if resolved_email is null then
+    raise exception 'email_missing';
+  end if;
+
+  insert into public.profiles (id, email)
+  values (auth.uid(), resolved_email)
+  on conflict (id) do update
+  set email = excluded.email;
+
+  insert into public.point_accounts (user_id, balance)
+  values (auth.uid(), 0)
+  on conflict (user_id) do nothing;
+end;
+$$;
+
 drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
 after insert on auth.users
@@ -353,6 +386,7 @@ grant select on public.app_settings to authenticated;
 grant select, update on public.profiles to authenticated;
 grant select on public.point_accounts to authenticated;
 grant select on public.point_ledger to authenticated;
+grant execute on function public.ensure_platform_user(text) to authenticated;
 grant execute on function public.consume_generation_points(integer) to authenticated;
 grant execute on function public.refund_generation_points(integer) to authenticated;
 grant execute on function public.admin_adjust_points(uuid, integer, text) to authenticated;

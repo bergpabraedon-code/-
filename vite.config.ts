@@ -325,7 +325,7 @@ function normalizeEndpointValue(value: string) {
 }
 
 function parseAllowedApiBaseUrls() {
-  const fallback = ["https://www.meitujingling.cn/", "https://bobdong.cn/"];
+  const fallback = ["https://www.taijiai.online/", "https://bobdong.cn/"];
   const envValue = process.env.ALLOWED_API_BASE_URLS;
   if (!envValue?.trim()) return fallback;
   const normalized = envValue

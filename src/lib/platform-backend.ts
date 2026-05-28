@@ -140,7 +140,17 @@ export async function fetchCurrentPlatformUser() {
     error,
   } = await supabase.auth.getSession();
   if (error || !session?.user) return null;
+  await ensurePlatformUserRemote(session.user.email || "");
   return fetchPlatformUserById(session.user.id, session.user.email || "");
+}
+
+export async function ensurePlatformUserRemote(email = "") {
+  if (!supabase) return null;
+  const { error } = await supabase.rpc("ensure_platform_user", {
+    p_email: email || null,
+  });
+  if (error) throw error;
+  return true;
 }
 
 export async function fetchPlatformUserById(userId: string, emailFallback = "") {
@@ -184,6 +194,9 @@ export async function signUpPlatformUser(email: string, password: string) {
     password,
   });
   if (error) throw error;
+  if (data.session?.user) {
+    await ensurePlatformUserRemote(data.session.user.email || email);
+  }
   return data;
 }
 
@@ -194,6 +207,9 @@ export async function signInPlatformUser(email: string, password: string) {
     password,
   });
   if (error) throw error;
+  if (data.session?.user) {
+    await ensurePlatformUserRemote(data.session.user.email || email);
+  }
   return data;
 }
 

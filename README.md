@@ -162,8 +162,8 @@ cp .env.example .env
 然后至少修改这些值：
 
 ```bash
-VITE_ALLOWED_API_ENDPOINTS=[{"value":"https://www.meitujingling.cn/","label":"主服务","description":"你的主服务地址"}]
-ALLOWED_API_BASE_URLS=https://www.meitujingling.cn/
+VITE_ALLOWED_API_ENDPOINTS=[{"value":"https://www.taijiai.online/","label":"主服务","description":"你的主服务地址"}]
+ALLOWED_API_BASE_URLS=https://www.taijiai.online/
 PUBLIC_REFERENCE_BASE_URL=https://www.meitujingling.cn
 ADMIN_INITIAL_PASSWORD=change-this-password
 ```
@@ -197,7 +197,7 @@ npm run preview
 
 - `https://www.meitujingling.cn`
   这个域名给前端站点和内置 API 使用。
-- `https://www.meitujingling.cn`
+- `https://www.taijiai.online`
   这个域名给上游 AI 图片接口使用；如果你的前后端共域，也可以两个值填同一个域名。
 
 推荐落地步骤：

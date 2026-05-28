@@ -683,8 +683,8 @@ function normalizeEndpointValue(value: string) {
 function parseAllowedApiEndpoints(): AllowedApiEndpoint[] {
   const fallback: AllowedApiEndpoint[] = [
     {
-      value: "https://www.meitujingling.cn/",
-      label: "美图精灵",
+      value: "https://www.taijiai.online/",
+      label: "太极 AI",
       description: "主服务地址",
     },
     {
@@ -8415,12 +8415,12 @@ function AdminApp({
               ))}
             </select>
           </label>
-          <label className="wide">
+              <label className="wide">
             <span>中转网址</span>
             <input
               value={platformConfig.upstreamBaseUrl}
               onChange={(event) => onUpdatePlatformConfig({ upstreamBaseUrl: event.target.value })}
-              placeholder="https://www.meitujingling.cn/"
+              placeholder="https://www.taijiai.online/"
             />
           </label>
           <label className="wide">
