@@ -48,6 +48,25 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  DEFAULT_PLATFORM_CONFIG,
+  adjustPlatformUserPointsRemote,
+  consumeGenerationPointsRemote,
+  fetchCurrentPlatformUser,
+  fetchAdminPlatformConfig,
+  fetchPlatformConfig,
+  fetchPlatformUsers,
+  getSupabaseMissingConfigMessage,
+  isSupabaseEnabled,
+  refundGenerationPointsRemote,
+  savePlatformConfigRemote,
+  signInPlatformUser,
+  signOutPlatformUser,
+  signUpPlatformUser,
+  supabase,
+  type PlatformConfig,
+  type PlatformSessionUser,
+} from "./lib/platform-backend";
 import homeHeroImage from "./assets/home-hero.png";
 import homePromptPreview from "./assets/home-prompt-preview.png";
 import homeStudioPreview from "./assets/home-studio-preview.png";
@@ -67,6 +86,15 @@ type ApiConfig = {
   baseUrl: string;
   apiKey: string;
   rememberKey: boolean;
+};
+
+type PlatformUser = {
+  id: string;
+  email: string;
+  points: number;
+  createdAt: number;
+  isAdmin: boolean;
+  password?: string;
 };
 
 type ImageResolution = "1K" | "2K" | "4K";
@@ -655,8 +683,8 @@ function normalizeEndpointValue(value: string) {
 function parseAllowedApiEndpoints(): AllowedApiEndpoint[] {
   const fallback: AllowedApiEndpoint[] = [
     {
-      value: "https://www.taijiai.online/",
-      label: "太极 AI",
+      value: "https://www.meitujingling.cn/",
+      label: "美图精灵",
       description: "主服务地址",
     },
     {
@@ -691,6 +719,9 @@ const DEFAULT_API_URL = ALLOWED_API_ENDPOINTS[0].value;
 const DEFAULT_PROTOCOL: ImageProtocol = "custom-openai";
 const DEFAULT_IMAGE_RESOLUTION: ImageResolution = "1K";
 const SUPPORTED_REFERENCE_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+const USE_MANAGED_API = (import.meta.env.VITE_USE_MANAGED_API || "true") !== "false";
+const MANAGED_API_LABEL = import.meta.env.VITE_MANAGED_API_LABEL || "平台托管生图服务";
+const MANAGED_API_DESCRIPTION = import.meta.env.VITE_MANAGED_API_DESCRIPTION || "API URL 与 API Key 已固定在服务端，前端用户无需填写。";
 
 const ASPECT_RATIOS = [
   { value: "1:1", label: "1:1 方图 · 1024x1024", hint: "GPT Image 官方方图尺寸" },
@@ -712,6 +743,9 @@ const ASPECT_RATIOS = [
 
 const ALL_ASPECT_RATIOS = ASPECT_RATIOS.map((ratio) => ratio.value);
 const GPT_IMAGE_SUPPORTED_ASPECT_RATIOS = ["1:1", "2:3", "3:2"] as const;
+const PLATFORM_USERS_STORAGE_KEY = "imageStudioPlatformUsers";
+const PLATFORM_SESSION_STORAGE_KEY = "imageStudioPlatformSession";
+const PLATFORM_CONFIG_STORAGE_KEY = "imageStudioPlatformConfig";
 
 const IMAGEN_ASPECT_RATIOS = ["1:1", "3:4", "4:3", "9:16", "16:9"];
 const STABILITY_ASPECT_RATIOS = ["16:9", "1:1", "21:9", "2:3", "3:2", "4:5", "5:4", "9:16", "9:21"];
@@ -1814,7 +1848,9 @@ function formatProtocolCapability(protocol: ImageProtocol) {
 }
 
 function apiConnectionKey(config: ApiConfig) {
-  return `${config.protocol}|${normalizeApiBaseUrl(config.baseUrl)}|${config.apiKey.trim()}`;
+  return USE_MANAGED_API
+    ? `${config.protocol}|managed`
+    : `${config.protocol}|${normalizeApiBaseUrl(config.baseUrl)}|${config.apiKey.trim()}`;
 }
 
 function errorStatus(detail: ErrorDetail) {
@@ -2537,6 +2573,15 @@ async function readApiJson<T>(response: Response, endpoint: string): Promise<T> 
 }
 
 function maskApiKeyForLog(apiKey: string, rememberKey: boolean) {
+  if (USE_MANAGED_API) {
+    return {
+      present: true,
+      length: 0,
+      prefix: "server",
+      suffix: "fixed",
+      source: "server-managed",
+    };
+  }
   const trimmed = apiKey.trim();
   return {
     present: trimmed.length > 0,
@@ -2583,7 +2628,76 @@ function saveLocalLogs(logs: LocalLogEntry[]) {
   }
 }
 
+function loadPlatformUsers(): PlatformUser[] {
+  const raw = localStorage.getItem(PLATFORM_USERS_STORAGE_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed as PlatformUser[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function savePlatformUsers(users: PlatformUser[]) {
+  localStorage.setItem(PLATFORM_USERS_STORAGE_KEY, JSON.stringify(users));
+}
+
+function loadPlatformSessionUser(): PlatformSessionUser | null {
+  const raw = localStorage.getItem(PLATFORM_SESSION_STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as PlatformSessionUser;
+  } catch {
+    return null;
+  }
+}
+
+function savePlatformSessionUser(user: PlatformSessionUser | null) {
+  if (!user) {
+    localStorage.removeItem(PLATFORM_SESSION_STORAGE_KEY);
+    return;
+  }
+  localStorage.setItem(PLATFORM_SESSION_STORAGE_KEY, JSON.stringify(user));
+}
+
+function loadPlatformConfig(): PlatformConfig {
+  const raw = localStorage.getItem(PLATFORM_CONFIG_STORAGE_KEY);
+  if (!raw) return DEFAULT_PLATFORM_CONFIG;
+  try {
+    const parsed = JSON.parse(raw) as Partial<PlatformConfig>;
+    return {
+      pointsPerGeneration: Math.max(1, Number(parsed.pointsPerGeneration) || DEFAULT_PLATFORM_CONFIG.pointsPerGeneration),
+      signupBonusPoints: Math.max(0, Number(parsed.signupBonusPoints) || DEFAULT_PLATFORM_CONFIG.signupBonusPoints),
+      serviceName: parsed.serviceName?.trim() || DEFAULT_PLATFORM_CONFIG.serviceName,
+      serviceStatus: parsed.serviceStatus?.trim() || DEFAULT_PLATFORM_CONFIG.serviceStatus,
+      upstreamChannelLabel: parsed.upstreamChannelLabel?.trim() || DEFAULT_PLATFORM_CONFIG.upstreamChannelLabel,
+      upstreamProtocol: parsed.upstreamProtocol?.trim() || DEFAULT_PLATFORM_CONFIG.upstreamProtocol,
+      upstreamBaseUrl: parsed.upstreamBaseUrl?.trim() || DEFAULT_PLATFORM_CONFIG.upstreamBaseUrl,
+      upstreamApiKey: parsed.upstreamApiKey?.trim() || DEFAULT_PLATFORM_CONFIG.upstreamApiKey,
+      upstreamDefaultModel: parsed.upstreamDefaultModel?.trim() || DEFAULT_PLATFORM_CONFIG.upstreamDefaultModel,
+      upstreamAnalysisModel: parsed.upstreamAnalysisModel?.trim() || DEFAULT_PLATFORM_CONFIG.upstreamAnalysisModel,
+    };
+  } catch {
+    return DEFAULT_PLATFORM_CONFIG;
+  }
+}
+
+function savePlatformConfig(config: PlatformConfig) {
+  localStorage.setItem(PLATFORM_CONFIG_STORAGE_KEY, JSON.stringify(config));
+}
+
 function loadInitialApiConfig(): ApiConfig {
+  if (USE_MANAGED_API) {
+    const storedProtocol = localStorage.getItem("imageStudioProtocol");
+    const protocol = isImageProtocol(storedProtocol) ? storedProtocol : DEFAULT_PROTOCOL;
+    return {
+      protocol,
+      baseUrl: DEFAULT_API_URL,
+      apiKey: "",
+      rememberKey: false,
+    };
+  }
   const rememberKey = localStorage.getItem("imageStudioRememberKey") === "true";
   const storedProtocol = localStorage.getItem("imageStudioProtocol");
   const protocol = isImageProtocol(storedProtocol) ? storedProtocol : DEFAULT_PROTOCOL;
@@ -2629,6 +2743,7 @@ function loadInitialParams(): ImageParams {
 }
 
 function isAllowedImageModel(model: string) {
+  if (USE_MANAGED_API) return model.trim().length > 0;
   const normalized = model.toLowerCase();
   return normalized === "gpt-image-2" || normalized === "gpt-5.4-image-2" || normalized.includes("image-2");
 }
@@ -2642,17 +2757,19 @@ function imageModelPriority(model: string) {
 
 function filterAllowedImageModels(models: string[]) {
   return [...new Set(models)]
-    .filter(isAllowedImageModel)
+    .filter((model) => model.trim().length > 0)
+    .filter((model) => USE_MANAGED_API || isAllowedImageModel(model))
     .sort((a, b) => {
       const priority = imageModelPriority(a) - imageModelPriority(b);
       return priority || a.localeCompare(b);
     });
 }
 
-function preferModel(models: string[], current: string) {
+function preferModel(models: string[], current: string, preferred = "") {
   const allowedModels = filterAllowedImageModels(models);
   if (current && allowedModels.includes(current) && isAllowedImageModel(current)) return current;
   return (
+    (preferred && allowedModels.find((model) => model.toLowerCase() === preferred.toLowerCase())) ||
     allowedModels.find((model) => model.toLowerCase() === "gpt-image-2") ||
     allowedModels.find((model) => model.toLowerCase() === "gpt-5.4-image-2") ||
     allowedModels[0] ||
@@ -2692,9 +2809,9 @@ function filterAnalysisModels(models: string[]) {
     });
 }
 
-function preferAnalysisModel(models: string[], current: string) {
+function preferAnalysisModel(models: string[], current: string, preferred = "") {
   if (current && models.includes(current)) return current;
-  return models[0] || "";
+  return models.find((model) => model.toLowerCase() === preferred.toLowerCase()) || models[0] || "";
 }
 
 function analysisModeLabel(mode: AnalysisMode) {
@@ -3123,6 +3240,16 @@ function createJob(
 }
 
 export default function App() {
+  const [platformConfig, setPlatformConfig] = useState<PlatformConfig>(loadPlatformConfig);
+  const [platformUsers, setPlatformUsers] = useState<PlatformUser[]>(loadPlatformUsers);
+  const [platformUser, setPlatformUser] = useState<PlatformSessionUser | null>(loadPlatformSessionUser);
+  const [isAuthPanelOpen, setIsAuthPanelOpen] = useState(false);
+  const [authMode, setAuthMode] = useState<"login" | "register">("register");
+  const [authForm, setAuthForm] = useState({ email: "", password: "", confirmPassword: "" });
+  const [authError, setAuthError] = useState("");
+  const [authNotice, setAuthNotice] = useState(isSupabaseEnabled ? "将使用 Supabase 邮箱账号体系。" : getSupabaseMissingConfigMessage());
+  const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
+  const [isPlatformBootstrapping, setIsPlatformBootstrapping] = useState(isSupabaseEnabled);
   const [apiConfig, setApiConfig] = useState<ApiConfig>(loadInitialApiConfig);
   const [params, setParams] = useState<ImageParams>(loadInitialParams);
   const [prompt, setPrompt] = useState("");
@@ -3260,8 +3387,8 @@ export default function App() {
       .slice(0, 80);
   }, [modelFilter, models]);
   const preferredAnalysisModel = useMemo(
-    () => preferAnalysisModel(analysisModels, selectedAnalysisModel),
-    [analysisModels, selectedAnalysisModel],
+    () => preferAnalysisModel(analysisModels, selectedAnalysisModel, platformConfig.upstreamAnalysisModel),
+    [analysisModels, platformConfig.upstreamAnalysisModel, selectedAnalysisModel],
   );
 
   const visibleStats = useMemo(() => {
@@ -3308,7 +3435,7 @@ export default function App() {
     || agentModeState.status === "receiving"
   );
   const modelStatusMessage = isAutoLoadingModels
-    ? "正在自动验证 API Key 并读取 image-2 模型..."
+    ? USE_MANAGED_API ? "正在连接平台托管服务并读取模型..." : "正在自动验证 API Key 并读取 image-2 模型..."
     : isModelConnectionVerified && verifiedModelAt
       ? `${modelState.message} · ${formatDate(verifiedModelAt)}`
       : modelState.message;
@@ -3321,7 +3448,9 @@ export default function App() {
     isModelConnectionVerified &&
     aspectRatioSupported;
   const canRequestGenerate = canGenerate && !isPromptAnalyzing && !analysisCountdown && !isAgentModeBusy;
-  const canUseSquareIdentity = apiConfig.apiKey.trim().length >= API_KEY_MIN_LENGTH;
+  const canUseSquareIdentity = USE_MANAGED_API
+    ? Boolean(platformUser?.id || getClientId())
+    : apiConfig.apiKey.trim().length >= API_KEY_MIN_LENGTH;
 
   useEffect(() => {
     void loadMainRecordsPage();
@@ -3360,6 +3489,13 @@ export default function App() {
 
   useEffect(() => {
     localStorage.setItem("imageStudioProtocol", apiConfig.protocol);
+    if (USE_MANAGED_API) {
+      localStorage.removeItem("imageStudioBaseUrl");
+      localStorage.removeItem("imageStudioRememberKey");
+      localStorage.removeItem("imageStudioApiKey");
+      sessionStorage.removeItem("imageStudioApiKey");
+      return;
+    }
     localStorage.setItem("imageStudioBaseUrl", normalizeApiBaseUrl(apiConfig.baseUrl));
     localStorage.setItem("imageStudioRememberKey", String(apiConfig.rememberKey));
     sessionStorage.setItem("imageStudioApiKey", apiConfig.apiKey);
@@ -3369,6 +3505,24 @@ export default function App() {
       localStorage.removeItem("imageStudioApiKey");
     }
   }, [apiConfig]);
+
+  useEffect(() => {
+    if (!USE_MANAGED_API) return;
+    const managedProtocol = isImageProtocol(platformConfig.upstreamProtocol)
+      ? platformConfig.upstreamProtocol
+      : DEFAULT_PROTOCOL;
+    setApiConfig((current) => (
+      current.protocol === managedProtocol
+        ? current
+        : {
+            ...current,
+            protocol: managedProtocol,
+            baseUrl: DEFAULT_API_URL,
+            apiKey: "",
+            rememberKey: false,
+          }
+    ));
+  }, [platformConfig.upstreamProtocol]);
 
   useEffect(() => {
     localStorage.setItem("imageStudioParams", JSON.stringify(params));
@@ -3381,6 +3535,67 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("imageStudioSelectedAnalysisModel", selectedAnalysisModel);
   }, [selectedAnalysisModel]);
+
+  useEffect(() => {
+    if (isSupabaseEnabled) return;
+    savePlatformUsers(platformUsers);
+  }, [platformUsers]);
+
+  useEffect(() => {
+    if (isSupabaseEnabled) return;
+    savePlatformSessionUser(platformUser);
+  }, [platformUser]);
+
+  useEffect(() => {
+    if (isSupabaseEnabled) return;
+    savePlatformConfig(platformConfig);
+  }, [platformConfig]);
+
+  useEffect(() => {
+    if (!isSupabaseEnabled || !supabase) {
+      setIsPlatformBootstrapping(false);
+      return;
+    }
+    let active = true;
+
+    const syncPlatformState = async () => {
+      try {
+        const nextUser = await fetchCurrentPlatformUser();
+        const nextConfig = nextUser?.isAdmin
+          ? await fetchAdminPlatformConfig()
+          : await fetchPlatformConfig();
+        if (!active) return;
+        setPlatformConfig(nextConfig);
+        setPlatformUser(nextUser);
+        setAuthNotice(nextUser ? "" : "注册后将通过邮箱账号使用，积分与价格由 Supabase 管理。");
+        if (nextUser?.isAdmin) {
+          const members = await fetchPlatformUsers();
+          if (!active) return;
+          setPlatformUsers(members);
+        } else if (nextUser) {
+          setPlatformUsers([nextUser]);
+        } else {
+          setPlatformUsers([]);
+        }
+      } catch (error) {
+        if (!active) return;
+        setAuthNotice(`Supabase 连接已启用，但数据初始化失败：${formatError(error)}`);
+      } finally {
+        if (active) setIsPlatformBootstrapping(false);
+      }
+    };
+
+    void syncPlatformState();
+    const { data } = supabase.auth.onAuthStateChange(() => {
+      setIsPlatformBootstrapping(true);
+      void syncPlatformState();
+    });
+
+    return () => {
+      active = false;
+      data.subscription.unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -3505,6 +3720,23 @@ export default function App() {
 
   useEffect(() => {
     if (activePage !== "studio") return;
+    if (USE_MANAGED_API) {
+      const autoLoadKey = `${apiConfig.protocol}|managed`;
+      if (lastAutoModelLoadKeyRef.current === autoLoadKey && verifiedModelKey === autoLoadKey) return;
+      const timer = window.setTimeout(() => {
+        if (lastAutoModelLoadKeyRef.current === autoLoadKey && verifiedModelKey === autoLoadKey) return;
+        lastAutoModelLoadKeyRef.current = autoLoadKey;
+        void loadModels({
+          silent: true,
+          config: {
+            ...apiConfig,
+            baseUrl: DEFAULT_API_URL,
+            apiKey: "",
+          },
+        });
+      }, 600);
+      return () => window.clearTimeout(timer);
+    }
     const apiKey = apiConfig.apiKey.trim();
     if (apiKey.length < API_KEY_MIN_LENGTH) {
       lastAutoModelLoadKeyRef.current = "";
@@ -3514,7 +3746,7 @@ export default function App() {
       setSelectedModel("");
       setAnalysisModels([]);
       setSelectedAnalysisModel("");
-      setModelState({ status: "idle", message: "填写 API Key 后自动验证" });
+      setModelState({ status: "idle", message: USE_MANAGED_API ? "平台托管服务已就绪" : "填写 API Key 后自动验证" });
       return;
     }
     const normalizedBaseUrl = normalizeApiBaseUrl(apiConfig.baseUrl);
@@ -3526,7 +3758,7 @@ export default function App() {
       setSelectedModel("");
       setAnalysisModels([]);
       setSelectedAnalysisModel("");
-      setModelState({ status: "idle", message: "API Key 已变化，等待自动验证" });
+      setModelState({ status: "idle", message: USE_MANAGED_API ? "平台服务已重新就绪，等待读取模型" : "API Key 已变化，等待自动验证" });
     }
     if (lastAutoModelLoadKeyRef.current === autoLoadKey && verifiedModelKey === autoLoadKey) return;
 
@@ -4007,21 +4239,23 @@ export default function App() {
     config?: ApiConfig;
   } = {}): Promise<boolean> {
     const normalizedBaseUrl = normalizeApiBaseUrl(config.baseUrl);
-    const modelLoadKey = `${config.protocol}|${normalizedBaseUrl}|${config.apiKey.trim()}`;
+    const modelLoadKey = USE_MANAGED_API
+      ? `${config.protocol}|managed`
+      : `${config.protocol}|${normalizedBaseUrl}|${config.apiKey.trim()}`;
     const startedAt = Date.now();
-    if (config.apiKey.trim().length < API_KEY_MIN_LENGTH) {
+    if (!USE_MANAGED_API && config.apiKey.trim().length < API_KEY_MIN_LENGTH) {
       setVerifiedModelKey("");
       setVerifiedModelAt(0);
       setModels([]);
       setSelectedModel("");
       setAnalysisModels([]);
       setSelectedAnalysisModel("");
-      setModelState({ status: "error", message: "请先填写有效的 API Key" });
+      setModelState({ status: "error", message: USE_MANAGED_API ? "平台托管服务未就绪" : "请先填写有效的 API Key" });
       pushLocalLog({
         type: "model_load",
         level: "error",
         title: silent ? "自动读取模型失败" : "读取模型失败",
-        message: "API Key 为空或长度不足，已阻止请求上游。",
+        message: USE_MANAGED_API ? "平台托管服务未就绪，已阻止请求上游。" : "API Key 为空或长度不足，已阻止请求上游。",
         endpoint: "/api/models",
         durationMs: 0,
         params: apiLogSnapshot(config),
@@ -4034,17 +4268,17 @@ export default function App() {
     setVerifiedModelAt(0);
     if (silent) {
       setIsAutoLoadingModels(true);
-      setModelState({ status: "loading", message: "正在自动验证 API Key" });
+      setModelState({ status: "loading", message: USE_MANAGED_API ? "正在连接平台托管服务" : "正在自动验证 API Key" });
     } else {
       lastAutoModelLoadKeyRef.current = modelLoadKey;
       setIsAutoLoadingModels(false);
-      setModelState({ status: "loading", message: "正在验证 API Key 并读取模型" });
+      setModelState({ status: "loading", message: USE_MANAGED_API ? "正在读取平台模型配置" : "正在验证 API Key 并读取模型" });
     }
     pushLocalLog({
       type: "model_load",
       level: "info",
       title: silent ? "自动读取模型" : "读取模型列表",
-      message: "正在通过 /api/models 验证 API Key 并读取模型列表。",
+      message: USE_MANAGED_API ? "正在通过 /api/models 读取平台固定模型列表。" : "正在通过 /api/models 验证 API Key 并读取模型列表。",
       endpoint: "/api/models",
       params: apiLogSnapshot(config),
     });
@@ -4054,8 +4288,8 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           protocol: config.protocol,
-          baseUrl: normalizedBaseUrl,
-          apiKey: config.apiKey,
+          baseUrl: USE_MANAGED_API ? undefined : normalizedBaseUrl,
+          apiKey: USE_MANAGED_API ? undefined : config.apiKey,
         }),
       });
       const payload = await readApiJson<{ ok?: boolean; models?: string[]; raw?: unknown; detail?: unknown }>(response, "/api/models");
@@ -4070,10 +4304,10 @@ export default function App() {
       const nextModels = filterAllowedImageModels(upstreamModels);
       const nextAnalysisModels = filterAnalysisModels(upstreamModels);
       if (nextModels.length === 0) {
-        throw new Error("未找到可用的 image-2 模型");
+        throw new Error(USE_MANAGED_API ? "未找到可用的模型" : "未找到可用的 image-2 模型");
       }
-      const nextSelectedModel = preferModel(nextModels, selectedModel);
-      const nextSelectedAnalysisModel = preferAnalysisModel(nextAnalysisModels, selectedAnalysisModel);
+      const nextSelectedModel = preferModel(nextModels, selectedModel, platformConfig.upstreamDefaultModel);
+      const nextSelectedAnalysisModel = preferAnalysisModel(nextAnalysisModels, selectedAnalysisModel, platformConfig.upstreamAnalysisModel);
       lastAutoModelLoadKeyRef.current = modelLoadKey;
       setVerifiedModelKey(modelLoadKey);
       setVerifiedModelAt(Date.now());
@@ -4082,12 +4316,12 @@ export default function App() {
       setAnalysisModels(nextAnalysisModels);
       setSelectedAnalysisModel(nextSelectedAnalysisModel);
       setModelFilter("");
-      setModelState({ status: "ready", message: `API Key 有效 · ${nextModels.length} 个 image-2 模型` });
+      setModelState({ status: "ready", message: USE_MANAGED_API ? `平台服务已连接 · ${nextModels.length} 个模型` : `API Key 有效 · ${nextModels.length} 个 image-2 模型` });
       pushLocalLog({
         type: "model_load",
         level: "success",
         title: silent ? "自动读取模型成功" : "读取模型成功",
-        message: `已读取 ${nextModels.length} 个 image-2 模型，选中 ${nextSelectedModel}。`,
+        message: `已读取 ${nextModels.length} 个模型，选中 ${nextSelectedModel}。`,
         endpoint: "/api/models",
         durationMs: Date.now() - startedAt,
         params: apiLogSnapshot(config),
@@ -4132,19 +4366,19 @@ export default function App() {
   async function verifyApiKeyBeforeGeneration() {
     const modelLoadKey = apiConnectionKey(apiConfig);
     const startedAt = Date.now();
-    if (apiConfig.apiKey.trim().length < API_KEY_MIN_LENGTH) {
+    if (!USE_MANAGED_API && apiConfig.apiKey.trim().length < API_KEY_MIN_LENGTH) {
       setVerifiedModelKey("");
       setVerifiedModelAt(0);
       setModels([]);
       setSelectedModel("");
       setAnalysisModels([]);
       setSelectedAnalysisModel("");
-      setModelState({ status: "error", message: "请先填写有效的 API Key" });
+      setModelState({ status: "error", message: USE_MANAGED_API ? "平台托管服务未就绪" : "请先填写有效的 API Key" });
       pushLocalLog({
         type: "api_health",
         level: "error",
         title: "提交前验证失败",
-        message: "API Key 为空或长度不足，已阻止生成。",
+        message: USE_MANAGED_API ? "平台托管服务未就绪，已阻止生成。" : "API Key 为空或长度不足，已阻止生成。",
         endpoint: "/api/models",
         durationMs: 0,
         params: apiLogSnapshot(),
@@ -4153,12 +4387,12 @@ export default function App() {
     }
 
     setIsAutoLoadingModels(false);
-    setModelState({ status: "loading", message: "提交前验证 API Key" });
+    setModelState({ status: "loading", message: USE_MANAGED_API ? "提交前校验平台服务" : "提交前验证 API Key" });
     pushLocalLog({
       type: "api_health",
       level: "info",
-      title: "提交前验证 API Key",
-      message: "生成前先请求模型列表，避免无效 Key 进入生图链路。",
+      title: USE_MANAGED_API ? "提交前校验平台服务" : "提交前验证 API Key",
+      message: USE_MANAGED_API ? "生成前先请求平台固定模型列表，避免服务配置失效。" : "生成前先请求模型列表，避免无效 Key 进入生图链路。",
       endpoint: "/api/models",
       params: apiLogSnapshot(),
     });
@@ -4168,8 +4402,8 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           protocol: apiConfig.protocol,
-          baseUrl: normalizeApiBaseUrl(apiConfig.baseUrl),
-          apiKey: apiConfig.apiKey,
+          baseUrl: USE_MANAGED_API ? undefined : normalizeApiBaseUrl(apiConfig.baseUrl),
+          apiKey: USE_MANAGED_API ? undefined : apiConfig.apiKey,
         }),
       });
       const payload = await readApiJson<{ ok?: boolean; models?: string[]; raw?: unknown; detail?: unknown }>(response, "/api/models");
@@ -4179,37 +4413,39 @@ export default function App() {
       const nextModels = filterAllowedImageModels(Array.isArray(payload.models) ? payload.models : []);
       const nextAnalysisModels = filterAnalysisModels(Array.isArray(payload.models) ? payload.models : []);
       if (nextModels.length === 0) {
-        throw new Error("未找到可用的 image-2 模型");
+        throw new Error(USE_MANAGED_API ? "未找到可用的模型" : "未找到可用的 image-2 模型");
       }
       setVerifiedModelKey(modelLoadKey);
       setVerifiedModelAt(Date.now());
       setModels(nextModels);
       setAnalysisModels(nextAnalysisModels);
       if (!nextModels.includes(selectedModel)) {
-        setSelectedModel(preferModel(nextModels, selectedModel));
+        setSelectedModel(preferModel(nextModels, selectedModel, platformConfig.upstreamDefaultModel));
         setModelState({ status: "ready", message: "模型列表已刷新，请再次点击生成" });
         pushLocalLog({
           type: "api_health",
           level: "warning",
           title: "提交前验证通过但模型已刷新",
-          message: "当前选中模型不在最新 image-2 模型列表中，已自动改选，需要用户再次确认生成。",
+          message: USE_MANAGED_API
+            ? "当前选中模型不在最新模型列表中，已自动改选，需要用户再次确认生成。"
+            : "当前选中模型不在最新 image-2 模型列表中，已自动改选，需要用户再次确认生成。",
           endpoint: "/api/models",
           durationMs: Date.now() - startedAt,
           params: apiLogSnapshot(),
           response: {
             modelCount: nextModels.length,
             selectedModel,
-            nextSelectedModel: preferModel(nextModels, selectedModel),
+            nextSelectedModel: preferModel(nextModels, selectedModel, platformConfig.upstreamDefaultModel),
           },
         });
         return false;
       }
-      setModelState({ status: "ready", message: `API Key 有效 · ${nextModels.length} 个 image-2 模型` });
+      setModelState({ status: "ready", message: USE_MANAGED_API ? `平台服务已连接 · ${nextModels.length} 个模型` : `API Key 有效 · ${nextModels.length} 个 image-2 模型` });
       pushLocalLog({
         type: "api_health",
         level: "success",
         title: "提交前验证通过",
-        message: `API Key 可用，已确认 ${nextModels.length} 个 image-2 模型。`,
+        message: USE_MANAGED_API ? `平台固定服务可用，已确认 ${nextModels.length} 个模型。` : `API Key 可用，已确认 ${nextModels.length} 个 image-2 模型。`,
         endpoint: "/api/models",
         durationMs: Date.now() - startedAt,
         params: apiLogSnapshot(),
@@ -4326,8 +4562,6 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          baseUrl: normalizeApiBaseUrl(config.baseUrl),
-          apiKey: config.apiKey,
           clientId: getClientId(),
           request: {
             batchId: job.batchId,
@@ -4561,13 +4795,13 @@ export default function App() {
   ) {
     const usableAnalysisReferences = analysisReferences.filter(isReferenceUsable);
     const fallback = analysisFallback(mode, promptText, analysisParams, analysisReferences);
-    const analysisModel = preferAnalysisModel(analysisModels, selectedAnalysisModel);
-    if (!analysisModel || !apiConfig.apiKey.trim()) {
+    const analysisModel = preferAnalysisModel(analysisModels, selectedAnalysisModel, platformConfig.upstreamAnalysisModel);
+    if (!analysisModel) {
       pushLocalLog({
         type: "prompt_analysis",
         level: "warning",
         title: "提示词分析使用本地预检",
-        message: analysisModel ? "未配置 API Key，未请求 AI 分析接口。" : "未检测到可用分析模型，未请求 AI 分析接口。",
+        message: "未检测到可用分析模型，未请求 AI 分析接口。",
         endpoint: "/api/prompt/analyze",
         params: {
           ...apiLogSnapshot(),
@@ -4580,9 +4814,7 @@ export default function App() {
         ...fallback,
         analysisModel: analysisModel || "本地预检",
         source: "local" as const,
-        summary: analysisModel
-          ? "未配置 API Key，已先用本地规则完成预检。"
-          : "未检测到 GPT 分析模型，已先用本地规则完成预检。",
+        summary: "未检测到 GPT 分析模型，已先用本地规则完成预检。",
       };
     }
 
@@ -4624,8 +4856,6 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
         body: JSON.stringify({
-        baseUrl: normalizeApiBaseUrl(apiConfig.baseUrl),
-        apiKey: apiConfig.apiKey,
         clientId: getClientId(),
         analysisModel,
         prompt: promptText,
@@ -5307,8 +5537,6 @@ export default function App() {
     const analysisModel = preferredAnalysisModel;
     const requestStartedAt = Date.now();
     const payload = {
-      baseUrl: normalizeApiBaseUrl(apiConfig.baseUrl),
-      apiKey: apiConfig.apiKey,
       clientId: getClientId(),
       analysisModel,
       prompt: submittedPrompt,
@@ -5557,11 +5785,62 @@ export default function App() {
 
   async function requestStartBatch() {
     if (!canRequestGenerate) return;
+    if (isPlatformBootstrapping) {
+      setAnalysisState({
+        status: "error",
+        mode: "send",
+        message: "",
+        error: "账号状态还在同步，请稍后再试。",
+      });
+      return;
+    }
+    if (!platformUser) {
+      openAuthPanel("register");
+      return;
+    }
+    if (platformUser.points < platformConfig.pointsPerGeneration) {
+      setAnalysisState({
+        status: "error",
+        mode: "send",
+        message: "",
+        error: `积分不足，当前剩余 ${platformUser.points}，单次生成需要 ${platformConfig.pointsPerGeneration} 积分。`,
+      });
+      return;
+    }
     const nextStart = performance.now();
     if (nextStart - startIntentRef.current < 400) return;
     startIntentRef.current = nextStart;
+    if (isSupabaseEnabled) {
+      try {
+        const nextPoints = await consumeGenerationPointsRemote(platformConfig.pointsPerGeneration);
+        syncPlatformUser({ ...platformUser, points: nextPoints ?? Math.max(0, platformUser.points - platformConfig.pointsPerGeneration) });
+      } catch (error) {
+        setAnalysisState({
+          status: "error",
+          mode: "send",
+          message: "",
+          error: formatError(error),
+        });
+        return;
+      }
+    } else {
+      const nextPoints = platformUser.points - platformConfig.pointsPerGeneration;
+      syncPlatformUser({ ...platformUser, points: nextPoints });
+    }
     const apiKeyReady = await verifyApiKeyBeforeGeneration();
-    if (!apiKeyReady) return;
+    if (!apiKeyReady) {
+      if (isSupabaseEnabled) {
+        try {
+          const refundedPoints = await refundGenerationPointsRemote(platformConfig.pointsPerGeneration);
+          syncPlatformUser({ ...platformUser, points: refundedPoints ?? platformUser.points });
+        } catch {
+          syncPlatformUser({ ...platformUser, points: platformUser.points });
+        }
+      } else {
+        syncPlatformUser({ ...platformUser, points: platformUser.points });
+      }
+      return;
+    }
     const submittedPrompt = prompt.trim();
     if (isAgentModeEnabled) {
       triggerSendLaunchAnimation();
@@ -5703,14 +5982,14 @@ export default function App() {
       };
     });
     setModels(nextModels);
-    setSelectedModel((current) => preferModel(nextModels, current));
+        setSelectedModel((current) => preferModel(nextModels, current, platformConfig.upstreamDefaultModel));
     setAnalysisModels(nextAnalysisModels);
-    setSelectedAnalysisModel((current) => preferAnalysisModel(nextAnalysisModels, current));
+    setSelectedAnalysisModel((current) => preferAnalysisModel(nextAnalysisModels, current, platformConfig.upstreamAnalysisModel));
     setModelFilter("");
     setModelState(
       nextModels.length > 0
-        ? { status: "ready", message: `${nextModels.length} 个预设 image-2 模型` }
-        : { status: "idle", message: "等待读取 image-2 模型" },
+        ? { status: "ready", message: USE_MANAGED_API ? `${nextModels.length} 个预设模型` : `${nextModels.length} 个预设 image-2 模型` }
+        : { status: "idle", message: USE_MANAGED_API ? "等待读取模型" : "等待读取 image-2 模型" },
     );
   }
 
@@ -5754,7 +6033,7 @@ export default function App() {
     if (!canUseSquareIdentity) {
       setSquareRecommendState((current) => ({
         ...current,
-        [item.id]: { status: "error", message: "配置 API Key 后可推荐到广场" },
+        [item.id]: { status: "error", message: "登录后可推荐到广场" },
       }));
       return;
     }
@@ -5775,7 +6054,7 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          apiKey: apiConfig.apiKey,
+          apiKey: USE_MANAGED_API ? (platformUser?.id || getClientId()) : apiConfig.apiKey,
           imageId: item.id,
           thumbnailDataUrl: thumbnail.dataUrl,
           sourceImageMeta: {
@@ -6014,6 +6293,191 @@ export default function App() {
     }
   }
 
+  function syncPlatformUser(nextUser: PlatformSessionUser | null) {
+    setPlatformUser(nextUser);
+    if (!nextUser) return;
+    setPlatformUsers((current) => {
+      const exists = current.some((item) => item.id === nextUser.id);
+      if (!exists) return [nextUser, ...current];
+      return current.map((item) => (item.id === nextUser.id ? { ...item, ...nextUser, password: item.password } : item));
+    });
+  }
+
+  function openAuthPanel(mode: "login" | "register" = "register") {
+    setAuthMode(mode);
+    setAuthError("");
+    setAuthNotice(isSupabaseEnabled ? "将使用 Supabase 邮箱账号体系。" : getSupabaseMissingConfigMessage());
+    setIsAuthPanelOpen(true);
+  }
+
+  function closeAuthPanel() {
+    setIsAuthPanelOpen(false);
+    setAuthError("");
+    setAuthNotice("");
+  }
+
+  async function refreshPlatformMembersIfNeeded(currentUser: PlatformSessionUser | null) {
+    if (!isSupabaseEnabled) return;
+    const latestConfig = await fetchPlatformConfig();
+    setPlatformConfig(latestConfig);
+    if (currentUser?.isAdmin) {
+      const members = await fetchPlatformUsers();
+      setPlatformUsers(members);
+      return;
+    }
+    setPlatformUsers(currentUser ? [currentUser] : []);
+  }
+
+  async function handleAuthSubmit(event: FormEvent) {
+    event.preventDefault();
+    const email = authForm.email.trim().toLowerCase();
+    const password = authForm.password.trim();
+    if (!email || !password) {
+      setAuthError("请输入邮箱和密码");
+      return;
+    }
+    if (authMode === "register") {
+      if (password.length < 6) {
+        setAuthError("密码至少 6 位");
+        return;
+      }
+      if (password !== authForm.confirmPassword.trim()) {
+        setAuthError("两次输入的密码不一致");
+        return;
+      }
+    }
+
+    if (isSupabaseEnabled) {
+      setAuthError("");
+      setIsAuthSubmitting(true);
+      try {
+        if (authMode === "register") {
+          const result = await signUpPlatformUser(email, password);
+          if (result.session?.user) {
+            const nextUser = await fetchCurrentPlatformUser();
+            syncPlatformUser(nextUser);
+            await refreshPlatformMembersIfNeeded(nextUser);
+            closeAuthPanel();
+            enterStudio();
+          } else {
+            setAuthMode("login");
+            setAuthNotice("注册成功，请先到邮箱完成验证，再回来登录。");
+          }
+        } else {
+          await signInPlatformUser(email, password);
+          const nextUser = await fetchCurrentPlatformUser();
+          syncPlatformUser(nextUser);
+          await refreshPlatformMembersIfNeeded(nextUser);
+          closeAuthPanel();
+          enterStudio();
+        }
+        setAuthForm({ email, password: "", confirmPassword: "" });
+      } catch (error) {
+        setAuthError(formatError(error));
+      } finally {
+        setIsAuthSubmitting(false);
+      }
+      return;
+    }
+
+    if (authMode === "register") {
+      if (platformUsers.some((item) => item.email.toLowerCase() === email)) {
+        setAuthError("该邮箱已注册，请直接登录");
+        return;
+      }
+      const nextUser: PlatformUser = {
+        id: uid(),
+        email,
+        password,
+        points: platformConfig.signupBonusPoints,
+        createdAt: Date.now(),
+        isAdmin: false,
+      };
+      setPlatformUsers((current) => [nextUser, ...current]);
+      setPlatformUser({
+        id: nextUser.id,
+        email: nextUser.email,
+        points: nextUser.points,
+        createdAt: nextUser.createdAt,
+        isAdmin: nextUser.isAdmin,
+      });
+      setAuthForm({ email, password: "", confirmPassword: "" });
+      closeAuthPanel();
+      enterStudio();
+      return;
+    }
+    const matched = platformUsers.find((item) => item.email.toLowerCase() === email && item.password === password);
+    if (!matched) {
+      setAuthError("邮箱或密码不正确");
+      return;
+    }
+    setPlatformUser({
+      id: matched.id,
+      email: matched.email,
+      points: matched.points,
+      createdAt: matched.createdAt,
+      isAdmin: matched.isAdmin,
+    });
+    setAuthForm({ email, password: "", confirmPassword: "" });
+    closeAuthPanel();
+  }
+
+  async function handleLogoutPlatformUser() {
+    if (isSupabaseEnabled) {
+      await signOutPlatformUser();
+      setPlatformUsers([]);
+      setPlatformUser(null);
+      return;
+    }
+    setPlatformUser(null);
+  }
+
+  async function handlePlatformConfigChange(patch: Partial<PlatformConfig>) {
+    const nextConfig = {
+      ...platformConfig,
+      ...patch,
+      pointsPerGeneration: patch.pointsPerGeneration !== undefined ? Math.max(1, Number(patch.pointsPerGeneration) || platformConfig.pointsPerGeneration) : platformConfig.pointsPerGeneration,
+      signupBonusPoints: patch.signupBonusPoints !== undefined ? Math.max(0, Number(patch.signupBonusPoints) || platformConfig.signupBonusPoints) : platformConfig.signupBonusPoints,
+    };
+    setPlatformConfig(nextConfig);
+    if (!isSupabaseEnabled) return;
+    try {
+      const persisted = await savePlatformConfigRemote(nextConfig);
+      setPlatformConfig(persisted);
+    } catch (error) {
+      setAuthNotice(`业务配置保存失败：${formatError(error)}`);
+    }
+  }
+
+  async function handleAdjustPlatformUserPoints(userId: string, delta: number) {
+    if (isSupabaseEnabled) {
+      try {
+        const updatedUser = await adjustPlatformUserPointsRemote(userId, delta);
+        if (updatedUser) {
+          setPlatformUsers((current) =>
+            current.map((item) => (item.id === userId ? { ...item, ...updatedUser, password: item.password } : item)),
+          );
+          if (platformUser?.id === userId) {
+            setPlatformUser(updatedUser);
+          }
+        }
+      } catch (error) {
+        setAuthNotice(`积分调整失败：${formatError(error)}`);
+      }
+      return;
+    }
+    setPlatformUsers((current) =>
+      current.map((item) =>
+        item.id === userId
+          ? { ...item, points: Math.max(0, item.points + delta) }
+          : item,
+      ),
+    );
+    if (platformUser?.id === userId) {
+      setPlatformUser((current) => current ? { ...current, points: Math.max(0, current.points + delta) } : current);
+    }
+  }
+
   function enterAdmin() {
     setActivePage("admin");
     if (window.location.hash !== "#admin") {
@@ -6064,7 +6528,15 @@ export default function App() {
     return (
       <>
         {frontendUpdateNotice}
-        <HomePage onEnter={enterStudio} onSquare={enterSquare} onAdmin={enterAdmin} />
+        <HomePage
+          onEnter={enterStudio}
+          onSquare={enterSquare}
+          onAdmin={enterAdmin}
+          onOpenAuth={openAuthPanel}
+          currentUser={platformUser}
+          platformConfig={platformConfig}
+          onLogout={handleLogoutPlatformUser}
+        />
       </>
     );
   }
@@ -6074,7 +6546,7 @@ export default function App() {
       <>
         {frontendUpdateNotice}
         <SquarePage
-          apiKey={apiConfig.apiKey}
+          apiKey={USE_MANAGED_API ? (platformUser?.id || getClientId()) : apiConfig.apiKey}
           onBackHome={returnHome}
           onEnterStudio={enterStudio}
         />
@@ -6086,7 +6558,14 @@ export default function App() {
     return (
       <>
         {frontendUpdateNotice}
-        <AdminApp onBackHome={returnHome} onEnterStudio={enterStudio} />
+        <AdminApp
+          onBackHome={returnHome}
+          onEnterStudio={enterStudio}
+          platformConfig={platformConfig}
+          onUpdatePlatformConfig={handlePlatformConfigChange}
+          platformUsers={platformUsers}
+          onAdjustUserPoints={handleAdjustPlatformUserPoints}
+        />
       </>
     );
   }
@@ -6208,6 +6687,31 @@ export default function App() {
             <strong>{selectedModel || "未选择"}</strong>
           </div>
           <div className="topbar-cluster right">
+            <div className={`user-pill ${platformUser ? "signed-in" : "guest"}`}>
+              <strong>{isPlatformBootstrapping ? "同步中..." : platformUser ? platformUser.email : "游客模式"}</strong>
+              <span>
+                {isPlatformBootstrapping
+                  ? "正在连接账号与积分数据"
+                  : platformUser
+                    ? `${platformUser.points} 积分${platformUser.isAdmin ? " · 管理员" : ""}`
+                    : `注册后使用 · ${platformConfig.pointsPerGeneration} 积分/次`}
+              </span>
+            </div>
+            {platformUser ? (
+              <button type="button" className="topbar-home-button" onClick={() => void handleLogoutPlatformUser()}>
+                <LogOut size={15} />
+                退出
+              </button>
+            ) : (
+              <button type="button" className="topbar-home-button" onClick={() => openAuthPanel("register")}>
+                <ShieldCheck size={15} />
+                注册使用
+              </button>
+            )}
+            <div className="price-pill">
+              <strong>{platformConfig.pointsPerGeneration} 积分/次</strong>
+              <span>管理员可调价</span>
+            </div>
             <button
               type="button"
               className={`topbar-log-button ${latestLocalLogLevel ? `is-${latestLocalLogLevel}` : ""}`}
@@ -6230,7 +6734,7 @@ export default function App() {
             <div className="local-log-head">
               <div>
                 <strong>本地请求日志</strong>
-                <span>只保存在当前浏览器，API Key 和参考图内容已脱敏。</span>
+                <span>只保存在当前浏览器，服务端密钥与参考图内容已脱敏。</span>
               </div>
               <div className="local-log-actions">
                 <button type="button" className="subtle-button compact" onClick={exportLocalDiagnostics} disabled={localLogs.length === 0} title="导出本地诊断为 JSON（图片内容已脱敏）">
@@ -7098,66 +7602,92 @@ export default function App() {
         </div>
 
         <section className="settings-section" data-onboarding-target="api">
-          <label>
-            <span>生图协议</span>
-            <select
-              value={apiConfig.protocol}
-              onChange={(event) => changeProtocol(event.target.value as ImageProtocol)}
-            >
-              {PROTOCOLS.map((protocol) => (
-                <option key={protocol.value} value={protocol.value}>
-                  {protocol.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="protocol-note">
-            <strong>{protocolDefinition.shortLabel}</strong>
-            <span>{protocolDefinition.description}</span>
-            <small>{formatProtocolCapability(apiConfig.protocol)}</small>
+          <div className="managed-service-card">
+            <strong>{platformConfig.serviceName}</strong>
+            <span>{platformConfig.serviceStatus}</span>
+            <small>
+              当前演示保留了下方高级 API 设置，方便内部测试；正式版会固定服务端 API，只保留用户注册、积分与任务使用入口。
+            </small>
           </div>
-          <label>
-            <span>API URL</span>
-            <select
-              value={apiConfig.baseUrl}
-              onChange={(event) => setApiConfig((current) => ({ ...current, baseUrl: normalizeApiBaseUrl(event.target.value) }))}
-            >
-              {ALLOWED_API_ENDPOINTS.map((endpoint) => (
-                <option key={endpoint.value} value={endpoint.value}>
-                  {endpoint.label} · {endpoint.value}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="endpoint-note">
-            {ALLOWED_API_ENDPOINTS.find((endpoint) => endpoint.value === apiConfig.baseUrl)?.description || "固定服务地址"}
-          </div>
-          <label>
-            <span>API Key</span>
-            <input
-              value={apiConfig.apiKey}
-              type="password"
-              onChange={(event) => setApiConfig((current) => ({ ...current, apiKey: event.target.value }))}
-              spellCheck={false}
-            />
-          </label>
-          <div className="prompt-group-hint api-key-hint" role="note">
-            <WandSparkles size={14} />
-            <span>
-              推荐使用 <strong>banana Pro 官转</strong> 或 <strong>OpenRouter</strong> 分组。
-            </span>
-          </div>
-          <label className="check-row">
-            <input
-              type="checkbox"
-              checked={apiConfig.rememberKey}
-              onChange={(event) => setApiConfig((current) => ({ ...current, rememberKey: event.target.checked }))}
-            />
-            <span>记住 API Key</span>
-          </label>
+          {USE_MANAGED_API ? (
+            <>
+              <div className="managed-service-card">
+                <strong>{MANAGED_API_LABEL}</strong>
+                <span>{MANAGED_API_DESCRIPTION}</span>
+                <small>
+                  当前由管理员后台统一配置：{platformConfig.upstreamChannelLabel} · {protocolDefinition.shortLabel} · 默认模型 {platformConfig.upstreamDefaultModel || "自动"}
+                </small>
+              </div>
+              <div className="protocol-note">
+                <strong>{protocolDefinition.shortLabel}</strong>
+                <span>{protocolDefinition.description}</span>
+                <small>{formatProtocolCapability(apiConfig.protocol)}</small>
+              </div>
+            </>
+          ) : (
+            <>
+              <label>
+                <span>生图协议</span>
+                <select
+                  value={apiConfig.protocol}
+                  onChange={(event) => changeProtocol(event.target.value as ImageProtocol)}
+                >
+                  {PROTOCOLS.map((protocol) => (
+                    <option key={protocol.value} value={protocol.value}>
+                      {protocol.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="protocol-note">
+                <strong>{protocolDefinition.shortLabel}</strong>
+                <span>{protocolDefinition.description}</span>
+                <small>{formatProtocolCapability(apiConfig.protocol)}</small>
+              </div>
+              <label>
+                <span>API URL</span>
+                <select
+                  value={apiConfig.baseUrl}
+                  onChange={(event) => setApiConfig((current) => ({ ...current, baseUrl: normalizeApiBaseUrl(event.target.value) }))}
+                >
+                  {ALLOWED_API_ENDPOINTS.map((endpoint) => (
+                    <option key={endpoint.value} value={endpoint.value}>
+                      {endpoint.label} · {endpoint.value}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="endpoint-note">
+                {ALLOWED_API_ENDPOINTS.find((endpoint) => endpoint.value === apiConfig.baseUrl)?.description || "固定服务地址"}
+              </div>
+              <label>
+                <span>API Key</span>
+                <input
+                  value={apiConfig.apiKey}
+                  type="password"
+                  onChange={(event) => setApiConfig((current) => ({ ...current, apiKey: event.target.value }))}
+                  spellCheck={false}
+                />
+              </label>
+              <div className="prompt-group-hint api-key-hint" role="note">
+                <WandSparkles size={14} />
+                <span>
+                  推荐使用 <strong>banana Pro 官转</strong> 或 <strong>OpenRouter</strong> 分组。
+                </span>
+              </div>
+              <label className="check-row">
+                <input
+                  type="checkbox"
+                  checked={apiConfig.rememberKey}
+                  onChange={(event) => setApiConfig((current) => ({ ...current, rememberKey: event.target.checked }))}
+                />
+                <span>记住 API Key</span>
+              </label>
+            </>
+          )}
           <button className="primary-action" type="button" onClick={() => void loadModels()} disabled={modelState.status === "loading"}>
             {modelState.status === "loading" ? <Loader2 size={17} className="spin" /> : <RefreshCw size={17} />}
-            读取/刷新模型
+            {USE_MANAGED_API ? "读取/刷新平台模型" : "读取/刷新模型"}
           </button>
           <div className={`status-line ${isAutoLoadingModels ? "loading" : modelState.status}`}>
             {isAutoLoadingModels ? (
@@ -7219,7 +7749,7 @@ export default function App() {
           <div className="model-list">
             {filteredModels.length === 0 ? (
               <div className="muted-box">
-                {models.length === 0 ? "暂无可用 image-2 模型" : "无匹配模型"}
+                {models.length === 0 ? (USE_MANAGED_API ? "暂无可用模型" : "暂无可用 image-2 模型") : "无匹配模型"}
               </div>
             ) : (
               filteredModels.map((model) => (
@@ -7383,11 +7913,77 @@ export default function App() {
           canGenerate={canGenerate}
           modelState={modelState}
           selectedModel={selectedModel}
-          apiKeyReady={apiConfig.apiKey.trim().length > 0}
+          apiKeyReady={USE_MANAGED_API || apiConfig.apiKey.trim().length > 0}
           onStepChange={setOnboardingStep}
           onOpenSettings={() => setIsSettingsOpen(true)}
           onFinish={completeOnboarding}
         />
+      )}
+      {isAuthPanelOpen && (
+        <div className="auth-modal-backdrop" role="presentation" onClick={closeAuthPanel}>
+          <section className="auth-modal" role="dialog" aria-modal="true" aria-label="用户注册与登录" onClick={(event) => event.stopPropagation()}>
+            <div className="auth-modal-head">
+              <div>
+                <strong>{authMode === "register" ? "注册后开始使用" : "登录继续创作"}</strong>
+                <span>
+                  {platformConfig.pointsPerGeneration} 积分/次，注册即送 {platformConfig.signupBonusPoints} 积分。
+                  {isSupabaseEnabled ? " 账号由 Supabase 托管。" : " 当前仍是本地演示账号。"}
+                </span>
+              </div>
+              <button type="button" className="icon-button" onClick={closeAuthPanel} title="关闭">
+                <X size={16} />
+              </button>
+            </div>
+            <form className="auth-modal-form" onSubmit={handleAuthSubmit}>
+              <label>
+                <span>邮箱</span>
+                <input
+                  type="email"
+                  value={authForm.email}
+                  placeholder="支持 QQ 邮箱、Gmail、Outlook"
+                  onChange={(event) => setAuthForm((current) => ({ ...current, email: event.target.value }))}
+                />
+              </label>
+              <label>
+                <span>密码</span>
+                <input
+                  type="password"
+                  value={authForm.password}
+                  placeholder={authMode === "register" ? "至少 6 位" : "输入登录密码"}
+                  onChange={(event) => setAuthForm((current) => ({ ...current, password: event.target.value }))}
+                />
+              </label>
+              {authMode === "register" && (
+                <label>
+                  <span>确认密码</span>
+                  <input
+                    type="password"
+                    value={authForm.confirmPassword}
+                    onChange={(event) => setAuthForm((current) => ({ ...current, confirmPassword: event.target.value }))}
+                  />
+                </label>
+              )}
+              {authNotice && <div className="admin-muted auth-helper-text">{authNotice}</div>}
+              {authError && <div className="admin-error">{authError}</div>}
+              <button type="submit" className="primary-action" disabled={isAuthSubmitting || isPlatformBootstrapping}>
+                {isAuthSubmitting || isPlatformBootstrapping ? <Loader2 size={16} className="spin" /> : <ShieldCheck size={16} />}
+                {isAuthSubmitting ? "提交中..." : authMode === "register" ? "注册并进入工作台" : "登录"}
+              </button>
+              <button
+                type="button"
+                className="subtle-button"
+                disabled={isAuthSubmitting}
+                onClick={() => {
+                  setAuthMode((current) => (current === "register" ? "login" : "register"));
+                  setAuthError("");
+                  setAuthNotice(isSupabaseEnabled ? "将使用 Supabase 邮箱账号体系。" : getSupabaseMissingConfigMessage());
+                }}
+              >
+                {authMode === "register" ? "已有账号，去登录" : "没有账号，去注册"}
+              </button>
+            </form>
+          </section>
+        </div>
       )}
     </div>
     </>
@@ -7397,9 +7993,17 @@ export default function App() {
 function AdminApp({
   onBackHome,
   onEnterStudio,
+  platformConfig,
+  onUpdatePlatformConfig,
+  platformUsers,
+  onAdjustUserPoints,
 }: {
   onBackHome: () => void;
   onEnterStudio: () => void;
+  platformConfig: PlatformConfig;
+  onUpdatePlatformConfig: (patch: Partial<PlatformConfig>) => void | Promise<void>;
+  platformUsers: PlatformUser[];
+  onAdjustUserPoints: (userId: string, delta: number) => void | Promise<void>;
 }) {
   const [user, setUser] = useState<AdminUserView | null>(null);
   const [isChecking, setIsChecking] = useState(true);
@@ -7630,7 +8234,7 @@ function AdminApp({
           <div className="admin-auth-hero">
             <span className="admin-badge"><ShieldCheck size={16} /> Admin Console</span>
             <h1>请求日志与服务健康后台</h1>
-            <p>查看所有用户的生成请求、成功率、耗时和失败原因。后台不会记录 API Key，也不会保存生成图片。</p>
+            <p>查看所有用户的生成请求、成功率、耗时和失败原因。后台不会记录真实上游密钥，也不会保存生成图片。</p>
             <div className="admin-auth-actions">
               <button type="button" className="subtle-button" onClick={onBackHome}>返回首页</button>
               <button type="button" className="subtle-button" onClick={onEnterStudio}>打开工作台</button>
@@ -7750,6 +8354,140 @@ function AdminApp({
         <AdminStatCard label="推荐尝试" value={squareOverview?.totalRecommendAttempts ?? 0} />
         <AdminStatCard label="替换率" value={`${squareOverview?.replacementRate ?? 0}%`} />
         <AdminStatCard label="广场点赞" value={squareOverview?.totalLikes ?? 0} tone="success" />
+      </section>
+
+      <section className="admin-panel admin-business-panel">
+        <div className="admin-panel-title">
+          <ShieldCheck size={17} />
+          <strong>业务配置</strong>
+        </div>
+        <div className="admin-business-grid">
+          <label>
+            <span>平台名称</span>
+            <input
+              value={platformConfig.serviceName}
+              onChange={(event) => onUpdatePlatformConfig({ serviceName: event.target.value })}
+            />
+          </label>
+          <label>
+            <span>单次积分</span>
+            <input
+              type="number"
+              min={1}
+              value={platformConfig.pointsPerGeneration}
+              onChange={(event) => onUpdatePlatformConfig({ pointsPerGeneration: Number(event.target.value) })}
+            />
+          </label>
+          <label>
+            <span>注册送积分</span>
+            <input
+              type="number"
+              min={0}
+              value={platformConfig.signupBonusPoints}
+              onChange={(event) => onUpdatePlatformConfig({ signupBonusPoints: Number(event.target.value) })}
+            />
+          </label>
+          <label className="wide">
+            <span>服务文案</span>
+            <input
+              value={platformConfig.serviceStatus}
+              onChange={(event) => onUpdatePlatformConfig({ serviceStatus: event.target.value })}
+            />
+          </label>
+          <label>
+            <span>上游分组名</span>
+            <input
+              value={platformConfig.upstreamChannelLabel}
+              onChange={(event) => onUpdatePlatformConfig({ upstreamChannelLabel: event.target.value })}
+              placeholder="banana Pro 官转"
+            />
+          </label>
+          <label>
+            <span>上游协议</span>
+            <select
+              value={platformConfig.upstreamProtocol}
+              onChange={(event) => onUpdatePlatformConfig({ upstreamProtocol: event.target.value })}
+            >
+              {PROTOCOLS.map((protocol) => (
+                <option key={protocol.value} value={protocol.value}>
+                  {protocol.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="wide">
+            <span>中转网址</span>
+            <input
+              value={platformConfig.upstreamBaseUrl}
+              onChange={(event) => onUpdatePlatformConfig({ upstreamBaseUrl: event.target.value })}
+              placeholder="https://www.meitujingling.cn/"
+            />
+          </label>
+          <label className="wide">
+            <span>上游 API Key</span>
+            <input
+              value={platformConfig.upstreamApiKey}
+              type="password"
+              onChange={(event) => onUpdatePlatformConfig({ upstreamApiKey: event.target.value })}
+              placeholder="管理员专用"
+              spellCheck={false}
+            />
+          </label>
+          <label>
+            <span>默认生图模型</span>
+            <input
+              value={platformConfig.upstreamDefaultModel}
+              onChange={(event) => onUpdatePlatformConfig({ upstreamDefaultModel: event.target.value })}
+              placeholder="gpt-image-2"
+            />
+          </label>
+          <label>
+            <span>默认分析模型</span>
+            <input
+              value={platformConfig.upstreamAnalysisModel}
+              onChange={(event) => onUpdatePlatformConfig({ upstreamAnalysisModel: event.target.value })}
+              placeholder="gpt-5.4"
+            />
+          </label>
+        </div>
+      </section>
+
+      <section className="admin-panel admin-user-panel">
+        <div className="admin-panel-title admin-panel-title-spread">
+          <div>
+            <ShieldCheck size={17} />
+            <strong>用户与积分</strong>
+          </div>
+          <span className="admin-muted">
+            {isSupabaseEnabled ? "当前面板已连接 Supabase 用户与积分表。" : "当前为本地演示数据，配置 Supabase 后会切到真实账号数据。"}
+          </span>
+        </div>
+        {platformUsers.length === 0 ? (
+          <p className="admin-muted">还没有注册用户。前台完成邮箱注册后会在这里显示。</p>
+        ) : (
+          <div className="admin-user-list">
+            {platformUsers
+              .slice()
+              .sort((a, b) => b.createdAt - a.createdAt)
+              .map((member) => (
+                <article className="admin-user-card" key={member.id}>
+                  <div className="admin-user-copy">
+                    <strong>{member.email}</strong>
+                    <span>注册于 {formatFullDate(member.createdAt)}</span>
+                  </div>
+                  <div className="admin-user-points">
+                    <b>{member.points}</b>
+                    <small>积分</small>
+                  </div>
+                  <div className="admin-user-actions">
+                    <button type="button" className="subtle-button" onClick={() => void onAdjustUserPoints(member.id, 10)}>+10</button>
+                    <button type="button" className="subtle-button" onClick={() => void onAdjustUserPoints(member.id, 50)}>+50</button>
+                    <button type="button" className="subtle-button" onClick={() => void onAdjustUserPoints(member.id, -10)}>-10</button>
+                  </div>
+                </article>
+              ))}
+          </div>
+        )}
       </section>
 
       <section className="admin-insight-grid">
@@ -7940,7 +8678,7 @@ function AdminApp({
                               <strong>请求详情</strong>
                               <span>{log.requestId} · {log.endpoint}</span>
                             </div>
-                            <span className="admin-log-safety">图片内容已脱敏，不记录 API Key 原文</span>
+                            <span className="admin-log-safety">图片内容已脱敏，不记录真实上游密钥原文</span>
                           </div>
                           <div className="admin-log-detail-grid">
                             <AdminJsonBlock title="请求参数" value={log.requestParams || {
@@ -8019,7 +8757,23 @@ function AdminJsonBlock({ title, value }: { title: string; value: unknown }) {
   );
 }
 
-function HomePage({ onEnter, onSquare, onAdmin }: { onEnter: () => void; onSquare: () => void; onAdmin: () => void }) {
+function HomePage({
+  onEnter,
+  onSquare,
+  onAdmin,
+  onOpenAuth,
+  currentUser,
+  platformConfig,
+  onLogout,
+}: {
+  onEnter: () => void;
+  onSquare: () => void;
+  onAdmin: () => void;
+  onOpenAuth: (mode?: "login" | "register") => void;
+  currentUser: PlatformSessionUser | null;
+  platformConfig: PlatformConfig;
+  onLogout: () => void | Promise<void>;
+}) {
   const featureBands = [
     {
       title: "统一记录流",
@@ -8082,12 +8836,28 @@ function HomePage({ onEnter, onSquare, onAdmin }: { onEnter: () => void; onSquar
             </button>
           </div>
           <div className="home-nav-actions">
-            <button type="button" className="home-nav-action" onClick={onEnter}>
-              打开工作台
-            </button>
+            {currentUser ? (
+              <div className="home-user-summary">
+                <strong>{currentUser.email}</strong>
+                <span>{currentUser.points} 积分{currentUser.isAdmin ? " · 管理员" : ""}</span>
+              </div>
+            ) : (
+              <button type="button" className="home-nav-action" onClick={() => { onEnter(); onOpenAuth("register"); }}>
+                注册使用
+              </button>
+            )}
             <button type="button" className="home-nav-action" onClick={onSquare}>
               进入广场
             </button>
+            {currentUser ? (
+              <button type="button" className="home-nav-action" onClick={() => void onLogout()}>
+                退出登录
+              </button>
+            ) : (
+              <button type="button" className="home-nav-action" onClick={() => { onEnter(); onOpenAuth("login"); }}>
+                邮箱登录
+              </button>
+            )}
             <button type="button" className="home-admin-link" onClick={onAdmin}>
               <ShieldCheck size={16} />
               管理后台
@@ -8101,9 +8871,21 @@ function HomePage({ onEnter, onSquare, onAdmin }: { onEnter: () => void; onSquar
           <p>
             从一句提示词，到一组可复用的视觉资产。把智能分析、批量生成、并行队列和本地图库，放进一个安静、清晰、反应迅速的创作空间。
           </p>
+          <div className="home-service-strip">
+            <span>{platformConfig.serviceName}</span>
+            <strong>{platformConfig.pointsPerGeneration} 积分/次</strong>
+            <small>{platformConfig.serviceStatus}</small>
+          </div>
           <div className="home-hero-actions">
-            <button type="button" className="home-primary" onClick={onEnter}>
-              开始生成
+            <button
+              type="button"
+              className="home-primary"
+              onClick={() => {
+                onEnter();
+                if (!currentUser) onOpenAuth("register");
+              }}
+            >
+              {currentUser ? "进入工作台" : "注册后开始生成"}
               <ArrowRight size={18} />
             </button>
             <button type="button" className="home-secondary" onClick={() => scrollToSection("home-flow")}>
@@ -8238,7 +9020,7 @@ function SquarePage({
   const [pendingLikeIds, setPendingLikeIds] = useState<Set<string>>(() => new Set());
   const pageRef = useRef<HTMLElement | null>(null);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
-  const apiKeyReady = apiKey.trim().length >= API_KEY_MIN_LENGTH;
+  const apiKeyReady = USE_MANAGED_API ? apiKey.trim().length > 0 : apiKey.trim().length >= API_KEY_MIN_LENGTH;
 
   async function fetchQuota() {
     if (!apiKeyReady) {
@@ -8305,7 +9087,7 @@ function SquarePage({
 
   async function toggleLike(item: SquareFeedItem) {
     if (!apiKeyReady) {
-      setError("配置 API Key 后可点赞");
+      setError(USE_MANAGED_API ? "登录后可点赞" : "配置 API Key 后可点赞");
       return;
     }
     setPendingLikeIds((current) => new Set(current).add(item.id));
@@ -8367,7 +9149,7 @@ function SquarePage({
           <p>这里展示被推荐出来的 1K 创作缩略图。点赞、推荐和替换都由服务端记录配额与日志。</p>
         </div>
         <div className="square-quota-strip" aria-label="广场配额">
-          <span>{apiKeyReady ? "API Key 已配置" : "未配置 API Key"}</span>
+          <span>{USE_MANAGED_API ? (apiKeyReady ? "账号已就绪" : "请先登录") : (apiKeyReady ? "API Key 已配置" : "未配置 API Key")}</span>
           <strong>{quota ? `${quota.shelfCount}/${quota.shelfLimit}` : "-/4"}</strong>
           <small>展示位</small>
           <strong>{quota ? quota.dailyRecommendLeft : "-"}</strong>
@@ -8490,7 +9272,7 @@ function SquareCard({
             type="button"
             className={`square-like-button ${item.likedByRequester ? "liked" : ""}`}
             disabled={!apiKeyReady || pendingLike}
-            title={apiKeyReady ? item.likedByRequester ? "取消点赞" : "点赞" : "配置 API Key 后可点赞"}
+            title={apiKeyReady ? item.likedByRequester ? "取消点赞" : "点赞" : USE_MANAGED_API ? "登录后可点赞" : "配置 API Key 后可点赞"}
             onClick={onLike}
           >
             {pendingLike ? <Loader2 size={15} className="spin" /> : <Heart size={15} />}
@@ -8531,8 +9313,12 @@ function OnboardingGuide({
     {
       target: "api",
       title: "连接你的生图服务",
-      body: "先在右侧配置里选择服务地址并填入 API Key。地址已被限制为两个固定入口，避免请求落到未知服务。",
-      status: apiKeyReady ? "API Key 已填写" : "等待填写 API Key",
+      body: USE_MANAGED_API
+        ? "平台已经固定好上游 API URL 和 API Key。前端用户只需要注册登录，不再填写接口信息。"
+        : "先在右侧配置里选择服务地址并填入 API Key。地址已被限制为两个固定入口，避免请求落到未知服务。",
+      status: USE_MANAGED_API
+        ? "平台托管服务已启用"
+        : apiKeyReady ? "API Key 已填写" : "等待填写 API Key",
     },
     {
       target: "model",
@@ -8778,7 +9564,7 @@ const JobCard = memo(function JobCard({
           <button
             type="button"
             className={`tile-square-action ${recommendState?.status || ""}`}
-            title={canRecommend ? recommendState?.message || "推荐到广场" : "配置 API Key 后可推荐到广场"}
+            title={canRecommend ? recommendState?.message || "推荐到广场" : USE_MANAGED_API ? "登录后可推荐到广场" : "配置 API Key 后可推荐到广场"}
             disabled={!canRecommend || recommendState?.status === "submitting"}
             onClick={(event) => {
               event.stopPropagation();
@@ -9455,7 +10241,7 @@ function ImagePreviewModal({
               <button
                 type="button"
                 className={`subtle-button ${recommendState?.status === "success" ? "square-success" : ""}`}
-                title={canRecommend ? recommendState?.message || "推荐到广场" : "配置 API Key 后可推荐到广场"}
+                title={canRecommend ? recommendState?.message || "推荐到广场" : USE_MANAGED_API ? "登录后可推荐到广场" : "配置 API Key 后可推荐到广场"}
                 disabled={!canRecommend || recommendState?.status === "submitting"}
                 onClick={onRecommend}
               >

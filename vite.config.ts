@@ -1,4 +1,5 @@
 import react from "@vitejs/plugin-react";
+import { createClient } from "@supabase/supabase-js";
 import { Buffer } from "node:buffer";
 import {
   createHash,
@@ -10,7 +11,10 @@ import {
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
-import { defineConfig, type PluginOption, type ViteDevServer } from "vite";
+import { defineConfig, loadEnv, type PluginOption, type ViteDevServer } from "vite";
+
+const loadedEnv = loadEnv(process.env.NODE_ENV || "development", process.cwd(), "");
+Object.assign(process.env, loadedEnv);
 
 type ImageProtocol =
   | "custom-openai"
@@ -321,7 +325,7 @@ function normalizeEndpointValue(value: string) {
 }
 
 function parseAllowedApiBaseUrls() {
-  const fallback = ["https://www.taijiai.online/", "https://bobdong.cn/"];
+  const fallback = ["https://www.meitujingling.cn/", "https://bobdong.cn/"];
   const envValue = process.env.ALLOWED_API_BASE_URLS;
   if (!envValue?.trim()) return fallback;
   const normalized = envValue
@@ -332,7 +336,16 @@ function parseAllowedApiBaseUrls() {
 }
 
 function resolvePublicReferenceBaseUrl() {
-  return (process.env.PUBLIC_REFERENCE_BASE_URL || "https://imagehub.taijiai.online").replace(/\/+$/, "");
+  return (process.env.PUBLIC_REFERENCE_BASE_URL || "https://www.meitujingling.cn").replace(/\/+$/, "");
+}
+
+function resolveManagedUpstreamBaseUrl() {
+  const raw = process.env.UPSTREAM_API_BASE_URL || process.env.ALLOWED_API_BASE_URLS?.split(",")[0] || "";
+  return normalizeEndpointValue(raw);
+}
+
+function resolveManagedUpstreamApiKey() {
+  return (process.env.UPSTREAM_API_KEY || "").trim();
 }
 
 function resolveAppPort() {
@@ -342,6 +355,18 @@ function resolveAppPort() {
 
 const ALLOWED_API_BASE_URLS = parseAllowedApiBaseUrls();
 const PUBLIC_REFERENCE_BASE_URL = resolvePublicReferenceBaseUrl();
+const MANAGED_UPSTREAM_BASE_URL = resolveManagedUpstreamBaseUrl();
+const MANAGED_UPSTREAM_API_KEY = resolveManagedUpstreamApiKey();
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL || "";
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const SUPABASE_ADMIN_CLIENT = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+    })
+  : null;
 const APP_PORT = resolveAppPort();
 const FRONTEND_BUILD_VERSION = createFrontendBuildVersion();
 const FRONTEND_BUILD_INFO = {
@@ -350,6 +375,56 @@ const FRONTEND_BUILD_INFO = {
 };
 
 const adminSessions = new Map<string, { username: string; expiresAt: number }>();
+
+type ManagedUpstreamConfig = {
+  baseUrl: string;
+  apiKey: string;
+  protocol: ImageProtocol;
+  defaultModel: string;
+  analysisModel: string;
+  channelLabel: string;
+};
+
+async function loadManagedUpstreamConfigFromSupabase(): Promise<ManagedUpstreamConfig | null> {
+  if (!SUPABASE_ADMIN_CLIENT) return null;
+  const { data, error } = await SUPABASE_ADMIN_CLIENT
+    .from("app_settings")
+    .select("upstream_protocol, upstream_base_url, upstream_api_key, upstream_default_model, upstream_analysis_model, upstream_channel_label")
+    .eq("id", "default")
+    .maybeSingle();
+  if (error || !data) return null;
+  const baseUrl = normalizeAllowedApiBaseUrl(String(data.upstream_base_url || ""));
+  const apiKey = String(data.upstream_api_key || "").trim();
+  if (!baseUrl || !apiKey) return null;
+  const protocol = getProtocol(String(data.upstream_protocol || DEFAULT_PROTOCOL));
+  return {
+    baseUrl,
+    apiKey,
+    protocol,
+    defaultModel: String(data.upstream_default_model || "").trim(),
+    analysisModel: String(data.upstream_analysis_model || "").trim(),
+    channelLabel: String(data.upstream_channel_label || "").trim(),
+  };
+}
+
+async function getManagedUpstreamConfig(): Promise<ManagedUpstreamConfig> {
+  const adminConfig = await loadManagedUpstreamConfigFromSupabase();
+  if (adminConfig) return adminConfig;
+  if (!MANAGED_UPSTREAM_BASE_URL) {
+    throw new Error("未配置 UPSTREAM_API_BASE_URL");
+  }
+  if (!MANAGED_UPSTREAM_API_KEY) {
+    throw new Error("未配置 UPSTREAM_API_KEY");
+  }
+  return {
+    baseUrl: normalizeAllowedApiBaseUrl(MANAGED_UPSTREAM_BASE_URL),
+    apiKey: MANAGED_UPSTREAM_API_KEY,
+    protocol: DEFAULT_PROTOCOL,
+    defaultModel: "",
+    analysisModel: "",
+    channelLabel: "",
+  };
+}
 
 const DEFAULT_MODELS: Record<ImageProtocol, string[]> = {
   "custom-openai": ["gpt-image-2", "gpt-5.4-image-2"],
@@ -3599,24 +3674,18 @@ function imageProxyPlugin(): PluginOption {
         try {
           const body = await readJsonBody(req);
           const protocol = getProtocol(body.protocol);
-          const baseUrl = normalizeAllowedApiBaseUrl(getString(body, "baseUrl"));
-          const apiKey = getString(body, "apiKey");
-          if (!apiKey) {
-            sendJson(res, 400, { ok: false, detail: { status: 400, error: "API Key 不能为空" } });
-            return;
-          }
+          const { baseUrl, apiKey } = await getManagedUpstreamConfig();
           const { models, raw } = await loadUpstreamModels(protocol, baseUrl, apiKey);
           sendJson(res, 200, { ok: true, models: [...new Set(models)].sort(), raw });
         } catch (error) {
           const upstreamStatus = httpStatusFromDetail(error);
           const summary = safeErrorSummary(error);
           const status = isAllowedApiBaseUrlError(error) ? 400 : upstreamStatus || 500;
-          const isAuthError = status === 401 || status === 403;
           sendJson(res, status, {
             ok: false,
             detail: {
               status,
-              error: isAuthError ? "API Key 错误或无权限，请检查后重试" : summary.message,
+              error: summary.message,
               type: summary.type,
               code: summary.code,
               raw: summary.raw,
@@ -3655,8 +3724,7 @@ function imageProxyPlugin(): PluginOption {
 
         try {
           const body = await readJsonBody(req);
-          const baseUrl = normalizeAllowedApiBaseUrl(getString(body, "baseUrl"));
-          const apiKey = getString(body, "apiKey");
+          const { baseUrl, apiKey } = await getManagedUpstreamConfig();
           const protocol = getProtocol(body.protocol);
           const clientId = getString(body, "clientId") || "anonymous";
           const analysisModel = getString(body, "analysisModel");
@@ -3794,8 +3862,7 @@ function imageProxyPlugin(): PluginOption {
 
         try {
           const body = await readJsonBody(req);
-          const baseUrl = normalizeAllowedApiBaseUrl(getString(body, "baseUrl") || ALLOWED_API_BASE_URLS[0]);
-          const apiKey = getString(body, "apiKey");
+          const { baseUrl, apiKey } = await getManagedUpstreamConfig();
           const protocol = getProtocol(body.protocol);
           const clientId = getString(body, "clientId") || "anonymous";
           const analysisModel = getString(body, "analysisModel");
@@ -3950,8 +4017,7 @@ function imageProxyPlugin(): PluginOption {
         let logCreated = false;
         try {
           const body = await readJsonBody(req);
-          const baseUrl = normalizeAllowedApiBaseUrl(getString(body, "baseUrl"));
-          const apiKey = getString(body, "apiKey");
+          const { baseUrl, apiKey } = await getManagedUpstreamConfig();
           const publicBaseUrl = publicBaseUrlFromRequest(req);
           const request = (body.request && typeof body.request === "object" ? body.request : {}) as GenerateRequest;
           const protocol = getProtocol(request.protocol);

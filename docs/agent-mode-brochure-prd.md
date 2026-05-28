@@ -868,7 +868,7 @@
 
 ```json
 {
-  "baseUrl": "https://www.taijiai.online/",
+  "baseUrl": "https://www.meitujingling.cn/",
   "apiKey": "******",
   "clientId": "client_xxx",
   "mode": "agent_a",
