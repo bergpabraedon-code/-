@@ -7271,8 +7271,28 @@ textarea:focus-visible {
 }
 
 @media (max-width: 900px) {
+  html,
+  body,
+  #root {
+    min-height: 100%;
+    overflow: auto;
+  }
+
+  body {
+    overscroll-behavior-y: none;
+  }
+
+  .app-shell {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+
   .workspace {
+    min-height: 100dvh;
     overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
     background:
       radial-gradient(circle at 50% -20%, rgba(232, 244, 237, 0.75), transparent 46%),
       #fff;
