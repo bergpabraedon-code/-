@@ -1606,7 +1606,7 @@ function pageFromHash(): AppPage {
   if (window.location.hash === "#studio") return "studio";
   if (window.location.hash === "#square") return "square";
   if (window.location.hash.startsWith("#admin")) return "admin";
-  return "home";
+  return "studio";
 }
 
 function clampNumber(value: number, min: number, max: number) {
