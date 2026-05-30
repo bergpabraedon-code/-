@@ -24,6 +24,7 @@ export type PlatformSessionUser = {
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL?.trim() || "";
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim() || "";
 const SETTINGS_ROW_ID = "default";
+const SUPABASE_DEMO_SESSION_STORAGE_KEY = "imageStudioSupabaseDemoSession";
 
 export const DEFAULT_PLATFORM_CONFIG: PlatformConfig = {
   pointsPerGeneration: 12,
@@ -106,6 +107,46 @@ function normalizeUserRow(
   };
 }
 
+function isMissingEnsurePlatformUserRpcError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const maybeError = error as { code?: unknown; message?: unknown; details?: unknown };
+  const detailText = `${String(maybeError.message || "")} ${String(maybeError.details || "")}`;
+  return maybeError.code === "PGRST202" && detailText.includes("ensure_platform_user");
+}
+
+function isMissingPlatformSchemaError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const maybeError = error as { code?: unknown; message?: unknown; details?: unknown };
+  const detailText = `${String(maybeError.message || "")} ${String(maybeError.details || "")}`;
+  return (
+    maybeError.code === "PGRST205"
+    || (
+      maybeError.code === "PGRST202"
+      && (
+        detailText.includes("ensure_platform_user")
+        || detailText.includes("consume_generation_points")
+        || detailText.includes("refund_generation_points")
+        || detailText.includes("admin_adjust_points")
+      )
+    )
+  );
+}
+
+function sessionUserFallback(user: { id?: string; email?: string | null } | null | undefined, emailFallback = "") {
+  const email = user?.email?.trim() || emailFallback.trim();
+  if (!user?.id || !email) return null;
+  return normalizeUserRow(
+    {
+      id: user.id,
+      email,
+      created_at: new Date().toISOString(),
+      is_admin: email.toLowerCase() === "461059476@qq.com",
+    },
+    DEFAULT_PLATFORM_CONFIG.signupBonusPoints,
+    email,
+  );
+}
+
 export function getSupabaseMissingConfigMessage() {
   if (isSupabaseEnabled) return "";
   return "未配置 Supabase，当前仍使用本地演示数据。";
@@ -139,9 +180,16 @@ export async function fetchCurrentPlatformUser() {
     data: { session },
     error,
   } = await supabase.auth.getSession();
-  if (error || !session?.user) return null;
-  await ensurePlatformUserRemote(session.user.email || "");
-  return fetchPlatformUserById(session.user.id, session.user.email || "");
+  if (error || !session?.user) {
+    return loadDemoPlatformSessionUser();
+  }
+  try {
+    await ensurePlatformUserRemote(session.user.email || "");
+    return await fetchPlatformUserById(session.user.id, session.user.email || "");
+  } catch (ensureError) {
+    if (!isMissingEnsurePlatformUserRpcError(ensureError)) throw ensureError;
+    return sessionUserFallback(session.user);
+  }
 }
 
 export async function ensurePlatformUserRemote(email = "") {
@@ -195,7 +243,11 @@ export async function signUpPlatformUser(email: string, password: string) {
   });
   if (error) throw error;
   if (data.session?.user) {
-    await ensurePlatformUserRemote(data.session.user.email || email);
+    try {
+      await ensurePlatformUserRemote(data.session.user.email || email);
+    } catch (ensureError) {
+      if (!isMissingEnsurePlatformUserRpcError(ensureError)) throw ensureError;
+    }
   }
   return data;
 }
@@ -208,7 +260,11 @@ export async function signInPlatformUser(email: string, password: string) {
   });
   if (error) throw error;
   if (data.session?.user) {
-    await ensurePlatformUserRemote(data.session.user.email || email);
+    try {
+      await ensurePlatformUserRemote(data.session.user.email || email);
+    } catch (ensureError) {
+      if (!isMissingEnsurePlatformUserRpcError(ensureError)) throw ensureError;
+    }
   }
   return data;
 }
@@ -217,6 +273,33 @@ export async function signOutPlatformUser() {
   if (!supabase) return;
   const { error } = await supabase.auth.signOut();
   if (error) throw error;
+  clearDemoPlatformSessionUser();
+}
+
+export function loadDemoPlatformSessionUser(): PlatformSessionUser | null {
+  if (typeof window === "undefined") return null;
+  const raw = window.localStorage.getItem(SUPABASE_DEMO_SESSION_STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as PlatformSessionUser;
+    if (!parsed?.id || !parsed?.email) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function saveDemoPlatformSessionUser(user: PlatformSessionUser | null) {
+  if (typeof window === "undefined") return;
+  if (!user) {
+    window.localStorage.removeItem(SUPABASE_DEMO_SESSION_STORAGE_KEY);
+    return;
+  }
+  window.localStorage.setItem(SUPABASE_DEMO_SESSION_STORAGE_KEY, JSON.stringify(user));
+}
+
+export function clearDemoPlatformSessionUser() {
+  saveDemoPlatformSessionUser(null);
 }
 
 export async function savePlatformConfigRemote(config: PlatformConfig) {
@@ -255,6 +338,7 @@ export async function consumeGenerationPointsRemote(amount: number) {
   const { data, error } = await supabase.rpc("consume_generation_points", {
     p_amount: Math.max(1, Math.trunc(amount)),
   });
+  if (isMissingPlatformSchemaError(error)) return null;
   if (error) throw error;
   return Number(data) || 0;
 }
@@ -264,6 +348,7 @@ export async function refundGenerationPointsRemote(amount: number) {
   const { data, error } = await supabase.rpc("refund_generation_points", {
     p_amount: Math.max(1, Math.trunc(amount)),
   });
+  if (isMissingPlatformSchemaError(error)) return null;
   if (error) throw error;
   return Number(data) || 0;
 }

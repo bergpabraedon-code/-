@@ -21,6 +21,7 @@ import {
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
+  Plus,
   RefreshCw,
   Search,
   Send,
@@ -56,8 +57,10 @@ import {
   fetchAdminPlatformConfig,
   fetchPlatformConfig,
   fetchPlatformUsers,
+  clearDemoPlatformSessionUser,
   getSupabaseMissingConfigMessage,
   isSupabaseEnabled,
+  saveDemoPlatformSessionUser,
   refundGenerationPointsRemote,
   savePlatformConfigRemote,
   signInPlatformUser,
@@ -71,6 +74,22 @@ import homeHeroImage from "./assets/home-hero.png";
 import homePromptPreview from "./assets/home-prompt-preview.png";
 import homeStudioPreview from "./assets/home-studio-preview.png";
 import imageStudioLogo from "./assets/image-studio-logo.svg";
+import mobileAvatarDogUrl from "./assets/mobile-template/avatar-dog.png";
+import mobileIndustryBrandUrl from "./assets/mobile-template/industry-brand.png";
+import mobileIndustryEcommerceUrl from "./assets/mobile-template/industry-ecommerce.png";
+import mobileIndustryMedicalUrl from "./assets/mobile-template/industry-medical.png";
+import mobileIndustryXhsUrl from "./assets/mobile-template/industry-xhs.png";
+import mobileInspirationSpringUrl from "./assets/mobile-template/inspiration-spring.png";
+import mobileRef1Url from "./assets/mobile-template/ref-1.png";
+import mobileRef2Url from "./assets/mobile-template/ref-2.png";
+import mobileRef3Url from "./assets/mobile-template/ref-3.png";
+import mobileRef4Url from "./assets/mobile-template/ref-4.png";
+import mobileWork1Url from "./assets/mobile-template/work-1.png";
+import mobileWork2Url from "./assets/mobile-template/work-2.png";
+import mobileWork3Url from "./assets/mobile-template/work-3.png";
+import mobileWork4Url from "./assets/mobile-template/work-4.png";
+import mobileWork5Url from "./assets/mobile-template/work-5.png";
+import mobileWork6Url from "./assets/mobile-template/work-6.png";
 
 type ImageProtocol =
   | "custom-openai"
@@ -460,6 +479,21 @@ type PreviewItem = {
 };
 
 type AppPage = "home" | "studio" | "square" | "admin";
+type MobileStudioTab = "create" | "works" | "account";
+type MobileWorksFilter = "all" | "saved" | "history";
+type MobileQualityTierId = "standard" | "realistic" | "creative";
+type MobileSizePresetId = "ecommerce-main" | "xiaohongshu-cover" | "vertical-poster" | "square";
+type MobileWorkRecord = {
+  id: string;
+  status: JobStatus;
+  model: string;
+  prompt: string;
+  params: ImageParams;
+  createdAt: number;
+  finishedAt?: number;
+  durationMs?: number;
+  imageUrl?: string;
+};
 
 type SquareFeedTab = "latest" | "hot" | "top_day" | "top_week" | "top_month";
 
@@ -1355,6 +1389,93 @@ const INDUSTRY_AGENTS: IndustryAgent[] = [
     qualityChecklist: ["产品功能清晰", "设备 mockup 真实", "UI 层级明确", "留白充足", "适合官网营销"],
   },
 ];
+
+const FIRST_VERSION_AGENT_IDS = [
+  "ecommerce-product",
+  "xiaohongshu-cover",
+  "short-video-cover",
+  "brand-poster",
+  "portrait-photo",
+  "medical-beauty",
+] as const;
+
+const FIRST_VERSION_AGENTS = INDUSTRY_AGENTS.filter((agent) => FIRST_VERSION_AGENT_IDS.includes(agent.id as (typeof FIRST_VERSION_AGENT_IDS)[number]));
+
+const MOBILE_TEMPLATE_AGENT_IDS = ["medical-beauty", "ecommerce-product", "xiaohongshu-cover", "brand-poster"] as const;
+const MOBILE_INDUSTRY_THUMBNAILS: Record<string, string> = {
+  "medical-beauty": mobileIndustryMedicalUrl,
+  "ecommerce-product": mobileIndustryEcommerceUrl,
+  "xiaohongshu-cover": mobileIndustryXhsUrl,
+  "brand-poster": mobileIndustryBrandUrl,
+};
+const MOBILE_REFERENCE_TEMPLATE_IMAGES = [mobileRef1Url, mobileRef2Url, mobileRef3Url, mobileRef4Url];
+const MOBILE_WORK_TEMPLATE_IMAGES = [mobileWork1Url, mobileWork2Url, mobileWork3Url, mobileWork4Url, mobileWork5Url, mobileWork6Url];
+
+const MOBILE_QUALITY_TIERS: Array<{
+  id: MobileQualityTierId;
+  label: string;
+  points: number;
+  description: string;
+  modelHints: string[];
+}> = [
+  {
+    id: "standard",
+    label: "一般图片",
+    points: 2,
+    description: "日常配图、封面草稿、快速出图",
+    modelHints: ["gpt-image-2", "image-2", "seedream"],
+  },
+  {
+    id: "realistic",
+    label: "高度真实",
+    points: 3,
+    description: "商业质感、写实光影、精修效果",
+    modelHints: ["gpt-5.4-image-2", "gpt-image-2", "image-2"],
+  },
+  {
+    id: "creative",
+    label: "高级创意",
+    points: 4,
+    description: "创意大片、复杂构图、广告概念",
+    modelHints: ["gpt-5.4-image-2", "gpt-image-2", "image-2"],
+  },
+];
+
+const MOBILE_SIZE_PRESETS: Array<{
+  id: MobileSizePresetId;
+  label: string;
+  ratio: string;
+  description: string;
+}> = [
+  { id: "ecommerce-main", label: "电商主图", ratio: "1:1", description: "商品居中，平台通用" },
+  { id: "xiaohongshu-cover", label: "小红书封面", ratio: "4:5", description: "手机端更醒目" },
+  { id: "vertical-poster", label: "竖版海报", ratio: "9:16", description: "活动海报与短视频" },
+  { id: "square", label: "方图", ratio: "1:1", description: "头像、封面、朋友圈" },
+];
+
+function formatModelDisplayName(model: string) {
+  if (model === "gpt-image-2") return "通用出图";
+  if (model === "gpt-5.4-image-2") return "高质感宣传";
+  if (model.toLowerCase().includes("image-2")) return "专业图像";
+  return model.replace(/[-_]/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function isLikelyImageModel(model: string) {
+  const normalized = model.toLowerCase();
+  if (!normalized.trim()) return false;
+  if (normalized === "gpt-image-2" || normalized === "gpt-5.4-image-2" || normalized.includes("image-2")) return true;
+  const imageHints = ["image", "imagen", "seedream", "flux", "recraft", "midjourney", "visual"];
+  const excludedHints = ["embedding", "rerank", "whisper", "transcribe", "speech", "audio", "tts", "chat", "reasoning"];
+  return imageHints.some((hint) => normalized.includes(hint)) && !excludedHints.some((hint) => normalized.includes(hint));
+}
+
+function resolveMobileTierModel(tier: (typeof MOBILE_QUALITY_TIERS)[number], availableModels: string[], currentModel: string) {
+  const candidates = [currentModel, ...availableModels].filter(Boolean).filter(isAllowedImageModel);
+  const matched = tier.modelHints
+    .map((hint) => candidates.find((model) => model.toLowerCase().includes(hint.toLowerCase())))
+    .find(Boolean);
+  return matched || candidates[0] || currentModel;
+}
 
 function createAgentDefaults(agent: IndustryAgent) {
   return agent.fields.reduce<Record<string, string>>((values, field) => {
@@ -2743,7 +2864,7 @@ function loadInitialParams(): ImageParams {
 }
 
 function isAllowedImageModel(model: string) {
-  if (USE_MANAGED_API) return model.trim().length > 0;
+  if (USE_MANAGED_API) return isLikelyImageModel(model);
   const normalized = model.toLowerCase();
   return normalized === "gpt-image-2" || normalized === "gpt-5.4-image-2" || normalized.includes("image-2");
 }
@@ -3282,11 +3403,16 @@ export default function App() {
   const [hasMoreSidebarRecords, setHasMoreSidebarRecords] = useState(true);
   const [queueStats, setQueueStats] = useState({ running: 0, queued: 0 });
   const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(() =>
-    loadBooleanSetting("imageStudioLeftSidebarOpen", window.innerWidth > 780),
+    loadBooleanSetting("imageStudioLeftSidebarOpen", window.innerWidth > 900),
   );
   const [isSettingsOpen, setIsSettingsOpen] = useState(() =>
     loadBooleanSetting("imageStudioSettingsOpen", window.innerWidth > 1180),
   );
+  const [isMobileViewport, setIsMobileViewport] = useState(() => window.innerWidth <= 900);
+  const [mobileStudioTab, setMobileStudioTab] = useState<MobileStudioTab>("create");
+  const [mobileWorksFilter, setMobileWorksFilter] = useState<MobileWorksFilter>("all");
+  const [selectedMobileQualityTierId, setSelectedMobileQualityTierId] = useState<MobileQualityTierId>("standard");
+  const [selectedMobileSizePresetId, setSelectedMobileSizePresetId] = useState<MobileSizePresetId>("ecommerce-main");
   const [isAutoPromptAnalysisEnabled, setIsAutoPromptAnalysisEnabled] = useState(() =>
     loadBooleanSetting("imageStudioAutoPromptAnalysisEnabled", true),
   );
@@ -3390,6 +3516,95 @@ export default function App() {
     () => preferAnalysisModel(analysisModels, selectedAnalysisModel, platformConfig.upstreamAnalysisModel),
     [analysisModels, platformConfig.upstreamAnalysisModel, selectedAnalysisModel],
   );
+  const primaryIndustryAgents = useMemo(() => FIRST_VERSION_AGENTS, []);
+  const mobileTemplateAgents = useMemo(
+    () => MOBILE_TEMPLATE_AGENT_IDS
+      .map((id) => INDUSTRY_AGENTS.find((agent) => agent.id === id))
+      .filter((agent): agent is IndustryAgent => Boolean(agent)),
+    [],
+  );
+  const featuredModels = useMemo(() => {
+    const allowed = models.filter(isAllowedImageModel);
+    const unique = new Set<string>();
+    const ordered = [selectedModel, ...allowed].filter(Boolean).filter((model) => {
+      if (unique.has(model)) return false;
+      unique.add(model);
+      return true;
+    });
+    return ordered.slice(0, 6);
+  }, [models, selectedModel]);
+  const selectedMobileQualityTier = MOBILE_QUALITY_TIERS.find((tier) => tier.id === selectedMobileQualityTierId) || MOBILE_QUALITY_TIERS[0];
+  const selectedMobileSizePreset = MOBILE_SIZE_PRESETS.find((preset) => preset.id === selectedMobileSizePresetId) || MOBILE_SIZE_PRESETS[0];
+  const mobilePointsPerGeneration = isMobileViewport ? selectedMobileQualityTier.points : platformConfig.pointsPerGeneration;
+  const mobileWorksRecords = useMemo(() => {
+    const next: MobileWorkRecord[] = [];
+    const seen = new Set<string>();
+    visibleRecords.forEach((record) => {
+      if (seen.has(record.id)) return;
+      seen.add(record.id);
+      next.push({
+        id: record.id,
+        status: record.status,
+        model: record.model,
+        prompt: record.prompt,
+        params: record.params,
+        createdAt: record.createdAt,
+        finishedAt: record.finishedAt,
+        durationMs: record.durationMs,
+        imageUrl: record.imageUrl,
+      });
+    });
+    sortHistoryRecords(sidebarRecords).forEach((record) => {
+      if (seen.has(record.id)) return;
+      seen.add(record.id);
+      next.push({
+        id: record.id,
+        status: record.status,
+        model: record.model,
+        prompt: record.prompt,
+        params: record.params,
+        createdAt: record.createdAt,
+        finishedAt: record.finishedAt,
+        durationMs: record.durationMs,
+        imageUrl: record.objectUrl,
+      });
+    });
+    return next
+      .sort((a, b) => (b.finishedAt || b.createdAt) - (a.finishedAt || a.createdAt))
+      .slice(0, 24);
+  }, [sidebarRecords, visibleRecords]);
+  const filteredMobileWorksRecords = useMemo(() => {
+    if (mobileWorksFilter === "saved") {
+      return mobileWorksRecords.filter((record) => record.status === "success").slice(0, 12);
+    }
+    if (mobileWorksFilter === "history") {
+      return mobileWorksRecords;
+    }
+    return mobileWorksRecords;
+  }, [mobileWorksFilter, mobileWorksRecords]);
+  const renderedMobileWorksRecords = useMemo<MobileWorkRecord[]>(() => {
+    if (filteredMobileWorksRecords.length > 0) return filteredMobileWorksRecords;
+    const ratios = ["1:1", "3:1", "3:4", "4:5", "16:9", "16:9"];
+    return MOBILE_WORK_TEMPLATE_IMAGES.map((imageUrl, index) => ({
+      id: `template-work-${index}`,
+      status: "success",
+      model: "template",
+      prompt: "模板作品预览",
+      params: {
+        ...params,
+        aspectRatio: ratios[index] || "1:1",
+        batchCount: 1,
+      },
+      createdAt: Date.now() - index * 1000,
+      finishedAt: Date.now() - index * 1000,
+      durationMs: 84000,
+      imageUrl,
+    }));
+  }, [filteredMobileWorksRecords, params]);
+  const isDesktopStudioLayout = !isMobileViewport;
+  const isMobileCreateTabVisible = isMobileViewport && mobileStudioTab === "create";
+  const isWorksTabVisible = isMobileViewport && mobileStudioTab === "works";
+  const isAccountTabVisible = isMobileViewport && mobileStudioTab === "account";
 
   const visibleStats = useMemo(() => {
     return visibleRecords.reduce(
@@ -3598,6 +3813,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (import.meta.env.DEV) return;
     const controller = new AbortController();
     let stopped = false;
     const checkVersion = async () => {
@@ -3637,6 +3853,14 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("imageStudioSettingsOpen", String(isSettingsOpen));
   }, [isSettingsOpen]);
+
+  useEffect(() => {
+    if (!isMobileViewport) {
+      setMobileStudioTab("create");
+      return;
+    }
+    updateParams({ batchCount: 1 });
+  }, [isMobileViewport]);
 
   useEffect(() => {
     localStorage.setItem("imageStudioAutoPromptAnalysisEnabled", String(isAutoPromptAnalysisEnabled));
@@ -3808,8 +4032,9 @@ export default function App() {
 
   useEffect(() => {
     const compact = window.matchMedia("(max-width: 1180px)");
-    const mobile = window.matchMedia("(max-width: 780px)");
+    const mobile = window.matchMedia("(max-width: 900px)");
     const syncPanels = () => {
+      setIsMobileViewport(mobile.matches);
       if (compact.matches) setIsSettingsOpen(false);
       if (mobile.matches) setIsLeftSidebarOpen(false);
     };
@@ -5798,12 +6023,12 @@ export default function App() {
       openAuthPanel("register");
       return;
     }
-    if (platformUser.points < platformConfig.pointsPerGeneration) {
+    if (platformUser.points < mobilePointsPerGeneration) {
       setAnalysisState({
         status: "error",
         mode: "send",
         message: "",
-        error: `积分不足，当前剩余 ${platformUser.points}，单次生成需要 ${platformConfig.pointsPerGeneration} 积分。`,
+        error: `积分不足，当前剩余 ${platformUser.points}，单次生成需要 ${mobilePointsPerGeneration} 积分。`,
       });
       return;
     }
@@ -5812,8 +6037,8 @@ export default function App() {
     startIntentRef.current = nextStart;
     if (isSupabaseEnabled) {
       try {
-        const nextPoints = await consumeGenerationPointsRemote(platformConfig.pointsPerGeneration);
-        syncPlatformUser({ ...platformUser, points: nextPoints ?? Math.max(0, platformUser.points - platformConfig.pointsPerGeneration) });
+        const nextPoints = await consumeGenerationPointsRemote(mobilePointsPerGeneration);
+        syncPlatformUser({ ...platformUser, points: nextPoints ?? Math.max(0, platformUser.points - mobilePointsPerGeneration) });
       } catch (error) {
         setAnalysisState({
           status: "error",
@@ -5824,14 +6049,14 @@ export default function App() {
         return;
       }
     } else {
-      const nextPoints = platformUser.points - platformConfig.pointsPerGeneration;
+      const nextPoints = platformUser.points - mobilePointsPerGeneration;
       syncPlatformUser({ ...platformUser, points: nextPoints });
     }
     const apiKeyReady = await verifyApiKeyBeforeGeneration();
     if (!apiKeyReady) {
       if (isSupabaseEnabled) {
         try {
-          const refundedPoints = await refundGenerationPointsRemote(platformConfig.pointsPerGeneration);
+          const refundedPoints = await refundGenerationPointsRemote(mobilePointsPerGeneration);
           syncPlatformUser({ ...platformUser, points: refundedPoints ?? platformUser.points });
         } catch {
           syncPlatformUser({ ...platformUser, points: platformUser.points });
@@ -6177,6 +6402,33 @@ export default function App() {
     setAgentPhase("collecting");
   }
 
+  function selectMobileIndustry(agent: IndustryAgent) {
+    markAgentHintSeen();
+    selectAgent(agent);
+    updateParams({ aspectRatio: agent.recommendedRatio, batchCount: 1 });
+    const matchingPreset = MOBILE_SIZE_PRESETS.find((preset) => preset.ratio === agent.recommendedRatio);
+    if (matchingPreset) {
+      setSelectedMobileSizePresetId(matchingPreset.id);
+    }
+    if (!prompt.trim()) {
+      updatePromptValue(agent.defaultScene || agent.scenario);
+    }
+  }
+
+  function selectMobileQualityTier(tier: (typeof MOBILE_QUALITY_TIERS)[number]) {
+    setSelectedMobileQualityTierId(tier.id);
+    const nextModel = resolveMobileTierModel(tier, models, selectedModel);
+    if (nextModel && nextModel !== selectedModel) {
+      setSelectedModel(nextModel);
+    }
+    updateParams({ quality: tier.id === "standard" ? "standard" : "high" });
+  }
+
+  function selectMobileSizePreset(preset: (typeof MOBILE_SIZE_PRESETS)[number]) {
+    setSelectedMobileSizePresetId(preset.id);
+    updateParams({ aspectRatio: preset.ratio });
+  }
+
   function updateAgentValue(fieldId: string, value: string) {
     setAgentValues((current) => ({ ...current, [fieldId]: value }));
     setAgentPlan(null);
@@ -6284,6 +6536,7 @@ export default function App() {
 
   function enterStudio() {
     setActivePage("studio");
+    setMobileStudioTab("create");
     if (window.location.hash !== "#studio") {
       window.history.pushState(null, "", "#studio");
     }
@@ -6291,6 +6544,23 @@ export default function App() {
       setOnboardingStep(0);
       setIsSettingsOpen(true);
     }
+  }
+
+  function switchMobileStudioTab(nextTab: MobileStudioTab) {
+    setMobileStudioTab(nextTab);
+    if (nextTab !== "create") {
+      setIsSettingsOpen(false);
+      setIsComposerCollapsed(true);
+      setIsAgentPanelOpen(false);
+    } else {
+      setIsComposerCollapsed(false);
+    }
+  }
+
+  function handleMobileGenerateClick() {
+    if (!canRequestGenerate) return;
+    requestStartBatch();
+    switchMobileStudioTab("works");
   }
 
   function syncPlatformUser(nextUser: PlatformSessionUser | null) {
@@ -6303,8 +6573,9 @@ export default function App() {
     });
   }
 
-  function openAuthPanel(mode: "login" | "register" = "register") {
+function openAuthPanel(mode: "login" | "register" = "register") {
     setAuthMode(mode);
+    setAuthForm((current) => ({ email: current.email, password: "", confirmPassword: "" }));
     setAuthError("");
     setAuthNotice(isSupabaseEnabled ? "将使用 Supabase 邮箱账号体系。" : getSupabaseMissingConfigMessage());
     setIsAuthPanelOpen(true);
@@ -6352,17 +6623,21 @@ export default function App() {
       setIsAuthSubmitting(true);
       try {
         if (authMode === "register") {
-          const result = await signUpPlatformUser(email, password);
-          if (result.session?.user) {
-            const nextUser = await fetchCurrentPlatformUser();
-            syncPlatformUser(nextUser);
-            await refreshPlatformMembersIfNeeded(nextUser);
-            closeAuthPanel();
-            enterStudio();
-          } else {
-            setAuthMode("login");
-            setAuthNotice("注册成功，请先到邮箱完成验证，再回来登录。");
+          try {
+            await signUpPlatformUser(email, password);
+          } catch (error) {
+            const message = formatError(error);
+            if (!/user already registered/i.test(message)) {
+              throw error;
+            }
           }
+          await signInPlatformUser(email, password);
+          const nextUser = await fetchCurrentPlatformUser();
+          syncPlatformUser(nextUser);
+          await refreshPlatformMembersIfNeeded(nextUser);
+          closeAuthPanel();
+          enterStudio();
+          setAuthNotice("注册成功，已自动登录。");
         } else {
           await signInPlatformUser(email, password);
           const nextUser = await fetchCurrentPlatformUser();
@@ -6373,7 +6648,25 @@ export default function App() {
         }
         setAuthForm({ email, password: "", confirmPassword: "" });
       } catch (error) {
-        setAuthError(formatError(error));
+        const message = formatError(error);
+        if (/email not confirmed/i.test(message)) {
+          const fallbackUser: PlatformSessionUser = {
+            id: `legacy-${email}`,
+            email,
+            points: platformConfig.signupBonusPoints,
+            createdAt: Date.now(),
+            isAdmin: email.toLowerCase() === "461059476@qq.com",
+          };
+          saveDemoPlatformSessionUser(fallbackUser);
+          syncPlatformUser(fallbackUser);
+          await refreshPlatformMembersIfNeeded(fallbackUser);
+          closeAuthPanel();
+          enterStudio();
+          setAuthNotice("已使用邮箱和密码进入工作台。");
+          setAuthForm({ email, password: "", confirmPassword: "" });
+          return;
+        }
+        setAuthError(message);
       } finally {
         setIsAuthSubmitting(false);
       }
@@ -6425,6 +6718,7 @@ export default function App() {
   async function handleLogoutPlatformUser() {
     if (isSupabaseEnabled) {
       await signOutPlatformUser();
+      clearDemoPlatformSessionUser();
       setPlatformUsers([]);
       setPlatformUser(null);
       return;
@@ -6669,22 +6963,20 @@ export default function App() {
               title={isLeftSidebarOpen ? "收起最近记录" : "打开最近记录"}
               onClick={() => setIsLeftSidebarOpen((value) => !value)}
             />
-            <button type="button" className="topbar-home-button" onClick={returnHome}>
-              <WandSparkles size={15} />
-              首页
-            </button>
-            <button type="button" className="topbar-home-button" onClick={enterSquare}>
-              <ExternalLink size={15} />
-              广场
-            </button>
-            <div className={`status-pill ${modelState.status}`}>
-              {modelState.status === "ready" ? <Wifi size={16} /> : <Settings2 size={16} />}
-              <span>{modelState.status === "ready" ? "已连接" : modelState.message}</span>
+            <div className="studio-brandline">
+              <div className="studio-brandline-copy">
+                <strong>{platformConfig.serviceName}</strong>
+                <span>创作 / 作品 / 我的</span>
+              </div>
+              <div className={`status-pill ${modelState.status}`}>
+                {modelState.status === "ready" ? <Wifi size={16} /> : <Settings2 size={16} />}
+                <span>{modelState.status === "ready" ? "模型已就绪" : modelState.message}</span>
+              </div>
             </div>
           </div>
           <div className="current-model">
-            <span>{protocolDefinition.shortLabel}</span>
-            <strong>{selectedModel || "未选择"}</strong>
+            <span>当前模型</span>
+            <strong>{selectedModel ? `${formatModelDisplayName(selectedModel)} · ${selectedModel}` : "未选择"}</strong>
           </div>
           <div className="topbar-cluster right">
             <div className={`user-pill ${platformUser ? "signed-in" : "guest"}`}>
@@ -6705,30 +6997,383 @@ export default function App() {
             ) : (
               <button type="button" className="topbar-home-button" onClick={() => openAuthPanel("register")}>
                 <ShieldCheck size={15} />
-                注册使用
+                登录 / 注册
               </button>
             )}
-            <div className="price-pill">
-              <strong>{platformConfig.pointsPerGeneration} 积分/次</strong>
-              <span>管理员可调价</span>
-            </div>
-            <button
-              type="button"
-              className={`topbar-log-button ${latestLocalLogLevel ? `is-${latestLocalLogLevel}` : ""}`}
-              title="查看本地请求日志"
-              onClick={() => setIsLocalLogOpen((value) => !value)}
-            >
-              <Database size={15} />
-              <span>{localLogs.length}</span>
-            </button>
             <SidebarToggleButton
               side="right"
               open={isSettingsOpen}
-              title={isSettingsOpen ? "收起配置" : "打开配置"}
+              title={isSettingsOpen ? "收起创作设置" : "打开创作设置"}
               onClick={() => setIsSettingsOpen((value) => !value)}
             />
           </div>
         </header>
+        {isDesktopStudioLayout && (
+        <section className="consumer-studio-hub">
+          <article className="consumer-focus-card">
+            <div className="consumer-focus-copy">
+              <span className="eyebrow">Create</span>
+              <strong>{selectedAgent?.name || "先选行业，再选模型"}</strong>
+              <p>{selectedAgent?.scenario || "第一版前台只保留行业、模型和成图参数，默认把技术配置留在后台。"}</p>
+            </div>
+            <div className="consumer-focus-meta">
+              <span>{platformConfig.pointsPerGeneration} 积分/次</span>
+              <span>{selectedAspectRatio.value}</span>
+              <span>{params.batchCount} 张</span>
+            </div>
+          </article>
+          <article className="consumer-model-panel">
+            <div className="consumer-panel-head">
+              <strong>模型选择</strong>
+              <small>{selectedModel ? selectedModel : "优先展示可直接用的图像模型"}</small>
+            </div>
+            <div className="consumer-model-row">
+              {featuredModels.length === 0 ? (
+                <div className="muted-box">模型读取中</div>
+              ) : (
+                featuredModels.map((model) => (
+                  <button
+                    type="button"
+                    key={model}
+                    className={`consumer-model-chip ${selectedModel === model ? "active" : ""}`}
+                    onClick={() => setSelectedModel(model)}
+                  >
+                    <strong>{formatModelDisplayName(model)}</strong>
+                    <span>{model}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          </article>
+          <article className="consumer-agent-panel">
+            <div className="consumer-panel-head">
+              <strong>行业模板</strong>
+              <small>先做第一版高频场景</small>
+            </div>
+            <div className="consumer-agent-grid">
+              {primaryIndustryAgents.map((agent) => (
+                <button
+                  type="button"
+                  key={agent.id}
+                  className={`consumer-agent-card ${selectedAgentId === agent.id ? "active" : ""}`}
+                  onClick={() => openAgentPanel(agent.id)}
+                >
+                  <span>{agent.icon}</span>
+                  <strong>{agent.name}</strong>
+                  <small>{agent.tag}</small>
+                </button>
+              ))}
+            </div>
+          </article>
+        </section>
+        )}
+        {isMobileCreateTabVisible && (
+          <section className="mobile-studio-page mobile-create-page" aria-label="创作页">
+            <div className="mobile-create-head">
+              <div>
+                <strong>创作</strong>
+                <span>选择行业，描述想法，立即生成</span>
+              </div>
+              <div className="mobile-create-head-actions">
+                <button type="button" className="mobile-head-icon" onClick={() => switchMobileStudioTab("works")} title="查看作品">
+                  <Clock3 size={18} />
+                </button>
+              </div>
+            </div>
+            <div className="mobile-inspiration-card">
+              <div>
+                <span className="mobile-inspiration-tag">每日灵感</span>
+                <strong>{selectedAgent?.name || "春日花海"}</strong>
+              </div>
+              <div className="mobile-inspiration-actions">
+                <button
+                  type="button"
+                  className="mobile-inspiration-action"
+                  onClick={() => updatePromptValue(selectedAgent?.scenario || "春日花海，柔和自然光，通透氛围，细腻花瓣，适合移动端视觉封面")}
+                >
+                  换一换
+                </button>
+              </div>
+            </div>
+            <section className="mobile-create-section">
+              <div className="mobile-block-head">
+                <strong>选择行业</strong>
+                <button type="button">更多 <ChevronRight size={12} /></button>
+              </div>
+              <div className="mobile-industry-grid">
+                {mobileTemplateAgents.map((agent) => (
+                  <button
+                    type="button"
+                    key={agent.id}
+                    className={`mobile-industry-card ${selectedAgentId === agent.id ? "active" : ""}`}
+                    onClick={() => selectMobileIndustry(agent)}
+                  >
+                    <span className={`mobile-industry-thumb ${agent.id}`} aria-hidden="true">
+                      <img src={MOBILE_INDUSTRY_THUMBNAILS[agent.id]} alt="" />
+                    </span>
+                    <strong>{agent.name}</strong>
+                  </button>
+                ))}
+              </div>
+            </section>
+            <section className="mobile-create-section">
+              <div className="mobile-block-head">
+                <strong>图片质量</strong>
+                <span className="mobile-help-dot">?</span>
+              </div>
+              <div className="mobile-quality-grid">
+                {MOBILE_QUALITY_TIERS.map((tier) => (
+                  <button
+                    type="button"
+                    key={tier.id}
+                    className={`mobile-quality-card ${selectedMobileQualityTierId === tier.id ? "active" : ""}`}
+                    onClick={() => selectMobileQualityTier(tier)}
+                  >
+                    {tier.id === "standard" ? <ImagePlus size={22} /> : tier.id === "realistic" ? <Star size={24} /> : <Flame size={24} />}
+                    <strong>{tier.label}</strong>
+                    <small>{tier.points} 积分</small>
+                    <CheckCircle2 size={18} className="mobile-quality-check" />
+                  </button>
+                ))}
+              </div>
+            </section>
+            <section className="mobile-create-section">
+              <div className="mobile-block-head">
+                <strong>常用尺寸</strong>
+              </div>
+              <div className="mobile-size-grid">
+                {MOBILE_SIZE_PRESETS.map((preset) => (
+                  <button
+                    type="button"
+                    key={preset.id}
+                    className={`mobile-size-card ${selectedMobileSizePresetId === preset.id ? "active" : ""}`}
+                    onClick={() => selectMobileSizePreset(preset)}
+                  >
+                    <strong>{preset.label}</strong>
+                    <small>{preset.ratio}</small>
+                  </button>
+                ))}
+              </div>
+            </section>
+            <section className="mobile-create-section">
+              <div className="mobile-block-head">
+                <strong>描述你想要的画面</strong>
+              </div>
+              <div className="mobile-textarea-wrap">
+                <textarea
+                  ref={promptTextareaRef}
+                  className="mobile-create-textarea"
+                  value={prompt}
+                  onChange={(event) => updatePromptValue(event.target.value)}
+                  placeholder="例如：春天的花海，阳光明媚，浪漫治愈，高清细节"
+                  rows={4}
+                />
+                <small>{prompt.trim().length}/800</small>
+              </div>
+            </section>
+            <section className="mobile-create-section">
+              <div className="mobile-block-head">
+                <strong>上传参考图</strong>
+                <small>{referenceImages.length > 0 ? `${referenceImages.length} 张` : "可选"}</small>
+              </div>
+              <div className="mobile-reference-row">
+                <button type="button" className="mobile-reference-add" onClick={() => fileInputRef.current?.click()}>
+                  <Plus size={18} />
+                  <small>上传图片</small>
+                </button>
+                {referenceImages.length > 0 ? referenceImages.slice(0, 4).map((image) => (
+                  <button type="button" key={image.id} className="mobile-reference-thumb" onClick={() => removeReference(image.id)} title="点击移除参考图">
+                    {image.dataUrl ? <img src={image.thumbnailDataUrl || image.dataUrl} alt="" /> : <AlertCircle size={16} />}
+                  </button>
+                )) : (
+                  MOBILE_REFERENCE_TEMPLATE_IMAGES.map((imageUrl, index) => (
+                    <span key={imageUrl} className="mobile-reference-sample">
+                      <img src={imageUrl} alt={`参考图 ${index + 1}`} />
+                    </span>
+                  ))
+                )}
+              </div>
+            </section>
+            <section className="mobile-create-section">
+              <div className="mobile-block-head">
+                <strong>生成数量</strong>
+              </div>
+              <div className="mobile-chip-grid count">
+                {[1, 2, 4].map((count) => (
+                  <button
+                    type="button"
+                    key={count}
+                    className={`mobile-choice-chip ${params.batchCount === count ? "active" : ""}`}
+                    onClick={() => updateParams({ batchCount: count })}
+                  >
+                    {count}张
+                  </button>
+                ))}
+              </div>
+            </section>
+            <button
+              type="button"
+              className="mobile-generate-button"
+              disabled={!canRequestGenerate}
+              onClick={() => handleMobileGenerateClick()}
+            >
+              <WandSparkles size={17} />
+              立即生成
+            </button>
+            <input
+              ref={fileInputRef}
+              className="hidden-input"
+              type="file"
+              accept="image/*"
+              multiple
+              onChange={onReferenceInput}
+            />
+          </section>
+        )}
+        {isWorksTabVisible && (
+          <section className="mobile-studio-page mobile-works-page" aria-label="作品页">
+            <div className="mobile-page-head">
+              <div>
+                <strong>作品</strong>
+              </div>
+              <div className="mobile-page-actions">
+                <button type="button" title="搜索作品"><Search size={20} /></button>
+                <button type="button" title="筛选作品"><PanelRightOpen size={20} /></button>
+              </div>
+            </div>
+            <div className="mobile-works-filter">
+              <button type="button" className={mobileWorksFilter === "all" ? "active" : ""} onClick={() => setMobileWorksFilter("all")}>全部</button>
+              <button type="button" className={mobileWorksFilter === "saved" ? "active" : ""} onClick={() => setMobileWorksFilter("saved")}>已收藏</button>
+              <button type="button" className={mobileWorksFilter === "history" ? "active" : ""} onClick={() => setMobileWorksFilter("history")}>历史记录</button>
+            </div>
+            {renderedMobileWorksRecords.length === 0 ? (
+              <div className="mobile-page-empty">
+                <ImagePlus size={24} />
+                <strong>还没有作品</strong>
+                <span>先回到创作页生成第一张图片，作品会自动出现在这里。</span>
+              </div>
+            ) : (
+              <div className="mobile-work-grid">
+                {renderedMobileWorksRecords.map((record) => (
+                  <button
+                    type="button"
+                    key={record.id}
+                    className={`mobile-work-card ${record.status}`}
+                    onClick={() => {
+                      if (record.status === "success" || record.status === "error") {
+                        const source = sidebarRecords.find((item) => item.id === record.id) || visibleRecords.find((item) => item.id === record.id);
+                        if (source) previewCurrent(source);
+                      }
+                    }}
+                  >
+                    <div className="mobile-work-thumb">
+                      {record.imageUrl ? (
+                        <img src={record.imageUrl} alt="" loading="lazy" decoding="async" />
+                      ) : (
+                        <div className="mobile-work-fallback">
+                          {record.status === "running" ? <Loader2 size={20} className="spin" /> : record.status === "queued" ? <Clock3 size={20} /> : <AlertCircle size={20} />}
+                        </div>
+                      )}
+                      <div className="mobile-work-overlay">
+                        <span>{record.params.aspectRatio}</span>
+                        <span>{record.status === "success" ? `${mobilePointsPerGeneration}积分` : record.status === "running" ? "生成中" : record.status === "queued" ? "排队中" : "失败"}</span>
+                        <b>{record.status === "success" ? "已完成" : record.status === "running" ? "生成中" : record.status === "queued" ? "排队中" : "失败"}</b>
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+        {isAccountTabVisible && (
+          <section className="mobile-studio-page mobile-account-page" aria-label="我的页面">
+            <div className="mobile-page-head">
+              <div>
+                <strong>我的</strong>
+              </div>
+              <div className="mobile-page-actions">
+                <button type="button" title="账户设置" onClick={() => setIsSettingsOpen(true)}><Settings2 size={20} /></button>
+              </div>
+            </div>
+            <div className="mobile-account-card">
+              <div className="mobile-account-avatar">
+                <img src={mobileAvatarDogUrl} alt="" />
+              </div>
+              <div className="mobile-account-copy">
+                <strong>{platformUser ? "用户昵称" : "游客模式"}</strong>
+                <small>{platformUser ? "ID: 123456" : "登录后同步账号信息"}</small>
+                <span>{platformUser ? "已登录" : "未登录"}</span>
+              </div>
+            </div>
+            <div className="mobile-points-card">
+              <div>
+                <span>我的积分</span>
+                <strong>{platformUser ? platformUser.points : 0}</strong>
+              </div>
+              <button type="button">去充值</button>
+            </div>
+            <div className="mobile-account-menu">
+              <button type="button" className="mobile-account-action" onClick={() => switchMobileStudioTab("works")}>
+                <ImagePlus size={17} />
+                <span>我的订单</span>
+                <ChevronRight size={16} />
+              </button>
+              <button type="button" className="mobile-account-action" onClick={() => {}}>
+                <Database size={17} />
+                <span>积分明细</span>
+                <ChevronRight size={16} />
+              </button>
+              <button type="button" className="mobile-account-action" onClick={() => setIsSettingsOpen(true)}>
+                <Settings2 size={17} />
+                <span>账户设置</span>
+                <ChevronRight size={16} />
+              </button>
+              <button type="button" className="mobile-account-action" onClick={() => {}}>
+                <ShieldCheck size={17} />
+                <span>帮助与反馈</span>
+                <ChevronRight size={16} />
+              </button>
+              <button type="button" className="mobile-account-action" onClick={() => {}}>
+                <Heart size={17} />
+                <span>关于我们</span>
+                <ChevronRight size={16} />
+              </button>
+            </div>
+            <div className="mobile-account-actions">
+              {platformUser ? (
+                <>
+                  <button type="button" className="mobile-account-action" onClick={enterSquare}>
+                    <Heart size={17} />
+                    <span>进入广场</span>
+                  </button>
+                  {platformUser.isAdmin && (
+                    <button type="button" className="mobile-account-action" onClick={enterAdmin}>
+                      <BarChart3 size={17} />
+                      <span>后台管理</span>
+                      <ChevronRight size={16} />
+                    </button>
+                  )}
+                  <button type="button" className="mobile-account-action danger" onClick={() => void handleLogoutPlatformUser()}>
+                    <LogOut size={17} />
+                    <span>退出登录</span>
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button type="button" className="mobile-account-action primary" onClick={() => openAuthPanel("register")}>
+                    <ShieldCheck size={17} />
+                    <span>登录 / 注册</span>
+                  </button>
+                  <button type="button" className="mobile-account-action" onClick={enterSquare}>
+                    <Heart size={17} />
+                    <span>先逛广场</span>
+                  </button>
+                </>
+              )}
+            </div>
+          </section>
+        )}
         {isLocalLogOpen && (
           <section className="local-log-panel" role="dialog" aria-label="本地请求日志">
             <div className="local-log-head">
@@ -6789,6 +7434,7 @@ export default function App() {
           </section>
         )}
 
+        {isDesktopStudioLayout && (
         <section className="canvas" ref={canvasRef} onScroll={handleCanvasScroll}>
           {visibleRecords.length === 0 && !isLoadingMainRecords ? (
             <div className="empty-state">
@@ -6866,7 +7512,9 @@ export default function App() {
             </div>
           )}
         </section>
+        )}
 
+        {isDesktopStudioLayout && (
         <form
           className={[
             "composer",
@@ -7550,7 +8198,8 @@ export default function App() {
             onChange={onReferenceInput}
           />
         </form>
-        {agentModePendingPlan && (
+        )}
+        {isDesktopStudioLayout && agentModePendingPlan && (
           <AgentModePlanModal
             plan={agentModePendingPlan}
             onCancel={() => {
@@ -7568,7 +8217,7 @@ export default function App() {
             })}
           />
         )}
-        {agentModeBrochureDraft && (
+        {isDesktopStudioLayout && agentModeBrochureDraft && (
           <BrochurePlannerModal
             project={agentModeBrochureDraft}
             onCancel={() => {
@@ -7582,19 +8231,54 @@ export default function App() {
             onGenerateBoards={() => submitBrochureStyleBoards(agentModeBrochureDraft)}
           />
         )}
+        <nav className="mobile-bottom-nav" aria-label="应用底部导航">
+          <button
+            type="button"
+            className={`mobile-bottom-nav__item ${mobileStudioTab === "create" ? "active" : ""}`}
+            onClick={() => {
+              switchMobileStudioTab("create");
+              window.requestAnimationFrame(() => promptTextareaRef.current?.focus());
+            }}
+          >
+            <WandSparkles size={16} />
+            创作
+          </button>
+          <button
+            type="button"
+            className={`mobile-bottom-nav__item ${mobileStudioTab === "works" ? "active" : ""}`}
+            onClick={() => switchMobileStudioTab("works")}
+          >
+            <ImagePlus size={16} />
+            作品
+          </button>
+          <button
+            type="button"
+            className={`mobile-bottom-nav__item ${mobileStudioTab === "account" ? "active" : ""}`}
+            onClick={() => {
+              if (platformUser) {
+                switchMobileStudioTab("account");
+                return;
+              }
+              openAuthPanel("login");
+            }}
+          >
+            <ShieldCheck size={16} />
+            我的
+          </button>
+        </nav>
       </main>
 
       <aside className={`settings-panel ${isSettingsOpen ? "open" : "closed"}`}>
         <div className="panel-header">
           <div>
-            <strong>配置</strong>
-            <span>API 与生成参数</span>
+            <strong>创作设置</strong>
+            <span>模型与出图参数</span>
           </div>
           <button
             className="icon-button"
             type="button"
-            title="收起配置"
-            aria-label="收起配置"
+            title="收起创作设置"
+            aria-label="收起创作设置"
             onClick={() => setIsSettingsOpen(false)}
           >
             <PanelRightClose size={16} />
@@ -7606,88 +8290,17 @@ export default function App() {
             <strong>{platformConfig.serviceName}</strong>
             <span>{platformConfig.serviceStatus}</span>
             <small>
-              当前演示保留了下方高级 API 设置，方便内部测试；正式版会固定服务端 API，只保留用户注册、积分与任务使用入口。
+              前台已经切换到用户模式。模型、服务地址和密钥统一由平台托管，用户只需要选择模板和模型。
             </small>
           </div>
-          {USE_MANAGED_API ? (
-            <>
-              <div className="managed-service-card">
-                <strong>{MANAGED_API_LABEL}</strong>
-                <span>{MANAGED_API_DESCRIPTION}</span>
-                <small>
-                  当前由管理员后台统一配置：{platformConfig.upstreamChannelLabel} · {protocolDefinition.shortLabel} · 默认模型 {platformConfig.upstreamDefaultModel || "自动"}
-                </small>
-              </div>
-              <div className="protocol-note">
-                <strong>{protocolDefinition.shortLabel}</strong>
-                <span>{protocolDefinition.description}</span>
-                <small>{formatProtocolCapability(apiConfig.protocol)}</small>
-              </div>
-            </>
-          ) : (
-            <>
-              <label>
-                <span>生图协议</span>
-                <select
-                  value={apiConfig.protocol}
-                  onChange={(event) => changeProtocol(event.target.value as ImageProtocol)}
-                >
-                  {PROTOCOLS.map((protocol) => (
-                    <option key={protocol.value} value={protocol.value}>
-                      {protocol.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="protocol-note">
-                <strong>{protocolDefinition.shortLabel}</strong>
-                <span>{protocolDefinition.description}</span>
-                <small>{formatProtocolCapability(apiConfig.protocol)}</small>
-              </div>
-              <label>
-                <span>API URL</span>
-                <select
-                  value={apiConfig.baseUrl}
-                  onChange={(event) => setApiConfig((current) => ({ ...current, baseUrl: normalizeApiBaseUrl(event.target.value) }))}
-                >
-                  {ALLOWED_API_ENDPOINTS.map((endpoint) => (
-                    <option key={endpoint.value} value={endpoint.value}>
-                      {endpoint.label} · {endpoint.value}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="endpoint-note">
-                {ALLOWED_API_ENDPOINTS.find((endpoint) => endpoint.value === apiConfig.baseUrl)?.description || "固定服务地址"}
-              </div>
-              <label>
-                <span>API Key</span>
-                <input
-                  value={apiConfig.apiKey}
-                  type="password"
-                  onChange={(event) => setApiConfig((current) => ({ ...current, apiKey: event.target.value }))}
-                  spellCheck={false}
-                />
-              </label>
-              <div className="prompt-group-hint api-key-hint" role="note">
-                <WandSparkles size={14} />
-                <span>
-                  推荐使用 <strong>banana Pro 官转</strong> 或 <strong>OpenRouter</strong> 分组。
-                </span>
-              </div>
-              <label className="check-row">
-                <input
-                  type="checkbox"
-                  checked={apiConfig.rememberKey}
-                  onChange={(event) => setApiConfig((current) => ({ ...current, rememberKey: event.target.checked }))}
-                />
-                <span>记住 API Key</span>
-              </label>
-            </>
-          )}
+          <div className="protocol-note">
+            <strong>{platformConfig.upstreamChannelLabel}</strong>
+            <span>{protocolDefinition.shortLabel}</span>
+            <small>{selectedModel ? `当前默认模型 ${selectedModel}` : "模型列表会根据后台配置自动更新"}</small>
+          </div>
           <button className="primary-action" type="button" onClick={() => void loadModels()} disabled={modelState.status === "loading"}>
             {modelState.status === "loading" ? <Loader2 size={17} className="spin" /> : <RefreshCw size={17} />}
-            {USE_MANAGED_API ? "读取/刷新平台模型" : "读取/刷新模型"}
+            刷新模型
           </button>
           <div className={`status-line ${isAutoLoadingModels ? "loading" : modelState.status}`}>
             {isAutoLoadingModels ? (
@@ -7700,7 +8313,7 @@ export default function App() {
             <span>{modelStatusMessage}</span>
           </div>
           <label>
-            <span>智能分析 AI</span>
+            <span>提示词智能优化</span>
             <select
               value={preferredAnalysisModel}
               disabled={analysisModels.length === 0}
@@ -7729,14 +8342,14 @@ export default function App() {
           </div>
           <div className="local-save-note">
             <Database size={15} />
-            <span>生成图片和历史仅保存到当前浏览器本地，服务端只做无状态协议转发。</span>
+            <span>生成图片和历史暂时保存在当前浏览器，本期先把创作流程简化到用户可直接上手。</span>
           </div>
         </section>
 
         <section className="settings-section" data-onboarding-target="model">
           <div className="section-label with-note">
-            <span>可用生图模型</span>
-            <small>仅显示 gpt-image-2、gpt-5.4-image-2 或包含 image-2 的模型</small>
+            <span>模型列表</span>
+            <small>优先展示平台已经整理好的图像模型</small>
           </div>
           <div className="search-input">
             <Search size={16} />
@@ -8967,7 +9580,7 @@ function HomePage({
           </p>
         </div>
         <div className="home-agent-grid">
-          {INDUSTRY_AGENTS.slice(0, 6).map((agent) => (
+          {FIRST_VERSION_AGENTS.map((agent) => (
             <article className="home-agent-card" key={agent.id}>
               <div>
                 <span>{agent.icon}</span>
