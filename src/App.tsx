@@ -7177,24 +7177,6 @@ function openAuthPanel(mode: "login" | "register" = "register") {
             </section>
             <section className="mobile-create-section">
               <div className="mobile-block-head">
-                <strong>常用尺寸</strong>
-              </div>
-              <div className="mobile-size-grid">
-                {MOBILE_SIZE_PRESETS.map((preset) => (
-                  <button
-                    type="button"
-                    key={preset.id}
-                    className={`mobile-size-card ${selectedMobileSizePresetId === preset.id ? "active" : ""}`}
-                    onClick={() => selectMobileSizePreset(preset)}
-                  >
-                    <strong>{preset.label}</strong>
-                    <small>{preset.ratio}</small>
-                  </button>
-                ))}
-              </div>
-            </section>
-            <section className="mobile-create-section">
-              <div className="mobile-block-head">
                 <strong>描述你想要的画面</strong>
               </div>
               <div className="mobile-textarea-wrap">
@@ -7207,6 +7189,42 @@ function openAuthPanel(mode: "login" | "register" = "register") {
                   rows={4}
                 />
                 <small>{prompt.trim().length}/800</small>
+              </div>
+            </section>
+            <section className="mobile-create-section">
+              <div className="mobile-block-head">
+                <strong>常用尺寸与数量</strong>
+              </div>
+              <div className="mobile-quick-selects">
+                <label className="mobile-quick-select">
+                  <span>常用尺寸</span>
+                  <select
+                    value={selectedMobileSizePresetId}
+                    onChange={(event) => {
+                      const preset = MOBILE_SIZE_PRESETS.find((item) => item.id === event.target.value);
+                      if (preset) selectMobileSizePreset(preset);
+                    }}
+                  >
+                    {MOBILE_SIZE_PRESETS.map((preset) => (
+                      <option key={preset.id} value={preset.id}>
+                        {preset.label} · {preset.ratio}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="mobile-quick-select">
+                  <span>生成数量</span>
+                  <select
+                    value={params.batchCount}
+                    onChange={(event) => updateParams({ batchCount: Number(event.target.value) })}
+                  >
+                    {[1, 2, 4].map((count) => (
+                      <option key={count} value={count}>
+                        {count} 张
+                      </option>
+                    ))}
+                  </select>
+                </label>
               </div>
             </section>
             <section className="mobile-create-section">
@@ -7230,23 +7248,6 @@ function openAuthPanel(mode: "login" | "register" = "register") {
                     </span>
                   ))
                 )}
-              </div>
-            </section>
-            <section className="mobile-create-section">
-              <div className="mobile-block-head">
-                <strong>生成数量</strong>
-              </div>
-              <div className="mobile-chip-grid count">
-                {[1, 2, 4].map((count) => (
-                  <button
-                    type="button"
-                    key={count}
-                    className={`mobile-choice-chip ${params.batchCount === count ? "active" : ""}`}
-                    onClick={() => updateParams({ batchCount: count })}
-                  >
-                    {count}张
-                  </button>
-                ))}
               </div>
             </section>
             <button

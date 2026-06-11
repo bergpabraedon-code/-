@@ -1716,7 +1716,7 @@ textarea:focus-visible {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr);
   gap: 14px;
-  padding: 14px 14px 0;
+  padding: 16px 16px 4px;
 }
 
 .consumer-focus-card,
@@ -1724,14 +1724,18 @@ textarea:focus-visible {
 .consumer-agent-panel {
   display: grid;
   gap: 12px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #fff;
+  padding: 16px;
+  border: 1px solid rgba(222, 222, 216, 0.92);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(251, 252, 250, 0.98) 100%);
+  box-shadow: 0 16px 34px rgba(17, 17, 17, 0.04);
 }
 
 .consumer-focus-card {
-  background: linear-gradient(135deg, #f7fbf8 0%, #ffffff 62%);
+  background:
+    radial-gradient(circle at top right, rgba(235, 248, 241, 0.9) 0 24%, transparent 25%),
+    linear-gradient(135deg, #f7fbf8 0%, #ffffff 70%);
 }
 
 .consumer-focus-copy {
@@ -1789,11 +1793,13 @@ textarea:focus-visible {
   display: grid;
   justify-items: start;
   gap: 3px;
-  min-height: 68px;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #fafbf9;
+  min-height: 82px;
+  padding: 14px 13px;
+  border: 1px solid rgba(222, 222, 216, 0.92);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(252, 252, 250, 0.98) 0%, rgba(247, 249, 246, 0.98) 100%);
+  box-shadow: 0 10px 18px rgba(17, 17, 17, 0.035);
   text-align: left;
 }
 
@@ -1819,11 +1825,13 @@ textarea:focus-visible {
   display: grid;
   justify-items: start;
   gap: 3px;
-  min-height: 78px;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #fafbf9;
+  min-height: 86px;
+  padding: 14px 13px;
+  border: 1px solid rgba(222, 222, 216, 0.92);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(252, 252, 250, 0.98) 0%, rgba(247, 249, 246, 0.98) 100%);
+  box-shadow: 0 10px 18px rgba(17, 17, 17, 0.035);
   text-align: left;
 }
 
@@ -5146,6 +5154,37 @@ textarea:focus-visible {
   gap: 8px;
 }
 
+.mobile-quick-selects {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.mobile-quick-select {
+  display: grid;
+  gap: 7px;
+}
+
+.mobile-quick-select span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.mobile-quick-select select {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid rgba(221, 224, 217, 0.95);
+  border-radius: 14px;
+  background: #fff;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 750;
+  padding: 0 12px;
+  appearance: none;
+  box-shadow: 0 8px 18px rgba(18, 20, 18, 0.035);
+}
+
 .mobile-industry-card,
 .mobile-quality-card,
 .mobile-size-card {
@@ -7393,11 +7432,12 @@ textarea:focus-visible {
 
   .mobile-industry-grid,
   .mobile-size-grid {
-    display: flex;
-    gap: 8px;
-    overflow-x: auto;
-    padding-bottom: 1px;
-    scrollbar-width: none;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    overflow: visible;
+    padding-bottom: 0;
+    scrollbar-width: auto;
   }
 
   .mobile-industry-grid::-webkit-scrollbar,
@@ -7409,23 +7449,22 @@ textarea:focus-visible {
 
   .mobile-industry-card {
     display: grid;
-    width: 88px;
-    min-width: 88px;
-    min-height: 58px;
-    grid-template-columns: minmax(0, 1fr) 32px;
-    align-items: center;
-    padding: 7px;
-    border-radius: 9px;
-    background: #fff;
-    box-shadow: none;
+    width: 100%;
+    min-width: 0;
+    min-height: 112px;
+    grid-template-columns: 1fr;
+    align-items: start;
+    gap: 8px;
+    padding: 10px;
+    border-radius: 16px;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbf9 100%);
+    box-shadow: 0 10px 18px rgba(17, 17, 17, 0.035);
   }
 
   .mobile-industry-thumb {
-    grid-column: 2;
-    grid-row: 1 / span 2;
-    width: 32px !important;
-    height: 42px !important;
-    border-radius: 7px !important;
+    width: 100% !important;
+    height: 72px !important;
+    border-radius: 12px !important;
     overflow: hidden;
     background: #f6f6f3 !important;
     color: rgba(255, 255, 255, 0) !important;
@@ -7438,10 +7477,9 @@ textarea:focus-visible {
   }
 
   .mobile-industry-card strong {
-    grid-column: 1;
     color: #222721;
-    font-size: 11px;
-    font-weight: 850;
+    font-size: 12px;
+    font-weight: 900;
     line-height: 1.25;
   }
 
@@ -7513,15 +7551,7 @@ textarea:focus-visible {
   }
 
   .mobile-size-card {
-    width: 84px;
-    min-width: 84px;
-    min-height: 34px;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    padding: 0 9px;
-    border-radius: 8px;
-    background: #fff;
-    box-shadow: none;
+    display: none;
   }
 
   .mobile-size-card strong {
@@ -7564,22 +7594,17 @@ textarea:focus-visible {
     border-radius: 9px;
   }
 
-  .mobile-chip-grid.count {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 10px;
+  .mobile-quick-selects {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
   }
 
-  .mobile-choice-chip {
-    min-height: 27px;
-    border-radius: 8px;
+  .mobile-quick-select select {
+    min-height: 40px;
+    border-radius: 12px;
     background: #fff;
     font-size: 12px;
-    font-weight: 850;
-  }
-
-  .mobile-choice-chip.active {
-    border-color: #29a968;
-    background: #f3fbf6;
+    box-shadow: none;
   }
 
   .mobile-generate-button {
