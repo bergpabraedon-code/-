@@ -5147,7 +5147,6 @@ textarea:focus-visible {
 }
 
 .mobile-industry-grid,
-.mobile-quality-grid,
 .mobile-size-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -5186,7 +5185,6 @@ textarea:focus-visible {
 }
 
 .mobile-industry-card,
-.mobile-quality-card,
 .mobile-size-card {
   display: grid;
   gap: 4px;
@@ -5223,7 +5221,6 @@ textarea:focus-visible {
 }
 
 .mobile-industry-card strong,
-.mobile-quality-card strong,
 .mobile-size-card strong {
   color: inherit;
   font-size: 13px;
@@ -5231,7 +5228,6 @@ textarea:focus-visible {
 }
 
 .mobile-industry-card small,
-.mobile-quality-card small,
 .mobile-size-card small {
   color: var(--muted);
   font-size: 10px;
@@ -5239,7 +5235,6 @@ textarea:focus-visible {
 }
 
 .mobile-industry-card.active,
-.mobile-quality-card.active,
 .mobile-size-card.active {
   border-color: #7cc89c;
   background: linear-gradient(180deg, #f5fff8 0%, #eef8f1 100%);
@@ -5248,59 +5243,12 @@ textarea:focus-visible {
 }
 
 .mobile-industry-card.active small,
-.mobile-quality-card.active small,
 .mobile-size-card.active small {
   color: rgba(22, 120, 72, 0.75);
 }
 
-.mobile-quality-card,
 .mobile-size-card {
   padding: 12px;
-}
-
-.mobile-quality-card > span {
-  justify-self: start;
-  padding: 3px 8px;
-  border-radius: 999px;
-  background: #eff5ec;
-  color: #5c7c68;
-  font-size: 10px;
-  font-weight: 900;
-}
-
-.mobile-quality-card.active > span {
-  background: #1f9b5f;
-  color: #fff;
-}
-
-.mobile-choice-chip {
-  display: grid;
-  gap: 2px;
-  min-height: 54px;
-  border: 1px solid rgba(221, 224, 217, 0.95);
-  border-radius: 14px;
-  background: #fafbf9;
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 750;
-  text-align: center;
-}
-
-.mobile-choice-chip.active {
-  border-color: #91c7a8;
-  background: #eef8f1;
-  color: var(--green);
-}
-
-.mobile-choice-chip strong {
-  font-size: 12px;
-  line-height: 1.2;
-}
-
-.mobile-choice-chip small {
-  color: inherit;
-  opacity: 0.72;
-  font-size: 10px;
 }
 
 .mobile-create-textarea {
@@ -7488,66 +7436,6 @@ textarea:focus-visible {
     background: #f8fffa;
     color: #178950;
     box-shadow: inset 0 0 0 1px rgba(23, 137, 80, 0.06);
-  }
-
-  .mobile-quality-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 8px;
-  }
-
-  .mobile-quality-card {
-    position: relative;
-    min-height: 78px;
-    justify-items: center;
-    align-content: center;
-    gap: 3px;
-    border-radius: 9px;
-    background: #fffaf2;
-    color: #c77924;
-    text-align: center;
-    box-shadow: none;
-  }
-
-  .mobile-quality-card:first-child {
-    background: #f2fbf6;
-    color: #159059;
-  }
-
-  .mobile-quality-card.active {
-    border-color: currentColor;
-    background: #effbf4;
-    box-shadow: none;
-  }
-
-  .mobile-quality-card.active:nth-child(2) {
-    background: #fffaf2;
-  }
-
-  .mobile-quality-card.active:nth-child(3) {
-    background: #f7f3ff;
-  }
-
-  .mobile-quality-card strong {
-    font-size: 12px;
-    font-weight: 900;
-  }
-
-  .mobile-quality-card small {
-    color: currentColor;
-    font-size: 11px;
-    font-weight: 850;
-  }
-
-  .mobile-quality-check {
-    position: absolute;
-    top: 9px;
-    right: 10px;
-    display: none;
-    fill: currentColor;
-  }
-
-  .mobile-quality-card.active .mobile-quality-check {
-    display: block;
   }
 
   .mobile-size-card {

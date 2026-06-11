@@ -481,7 +481,6 @@ type PreviewItem = {
 type AppPage = "home" | "studio" | "square" | "admin";
 type MobileStudioTab = "create" | "works" | "account";
 type MobileWorksFilter = "all" | "saved" | "history";
-type MobileQualityTierId = "standard" | "realistic" | "creative";
 type MobileSizePresetId = "ecommerce-main" | "xiaohongshu-cover" | "vertical-poster" | "square";
 type MobileWorkRecord = {
   id: string;
@@ -1411,36 +1410,6 @@ const MOBILE_INDUSTRY_THUMBNAILS: Record<string, string> = {
 const MOBILE_REFERENCE_TEMPLATE_IMAGES = [mobileRef1Url, mobileRef2Url, mobileRef3Url, mobileRef4Url];
 const MOBILE_WORK_TEMPLATE_IMAGES = [mobileWork1Url, mobileWork2Url, mobileWork3Url, mobileWork4Url, mobileWork5Url, mobileWork6Url];
 
-const MOBILE_QUALITY_TIERS: Array<{
-  id: MobileQualityTierId;
-  label: string;
-  points: number;
-  description: string;
-  modelHints: string[];
-}> = [
-  {
-    id: "standard",
-    label: "一般图片",
-    points: 2,
-    description: "日常配图、封面草稿、快速出图",
-    modelHints: ["gpt-image-2", "image-2", "seedream"],
-  },
-  {
-    id: "realistic",
-    label: "高度真实",
-    points: 3,
-    description: "商业质感、写实光影、精修效果",
-    modelHints: ["gpt-5.4-image-2", "gpt-image-2", "image-2"],
-  },
-  {
-    id: "creative",
-    label: "高级创意",
-    points: 4,
-    description: "创意大片、复杂构图、广告概念",
-    modelHints: ["gpt-5.4-image-2", "gpt-image-2", "image-2"],
-  },
-];
-
 const MOBILE_SIZE_PRESETS: Array<{
   id: MobileSizePresetId;
   label: string;
@@ -1467,14 +1436,6 @@ function isLikelyImageModel(model: string) {
   const imageHints = ["image", "imagen", "seedream", "flux", "recraft", "midjourney", "visual"];
   const excludedHints = ["embedding", "rerank", "whisper", "transcribe", "speech", "audio", "tts", "chat", "reasoning"];
   return imageHints.some((hint) => normalized.includes(hint)) && !excludedHints.some((hint) => normalized.includes(hint));
-}
-
-function resolveMobileTierModel(tier: (typeof MOBILE_QUALITY_TIERS)[number], availableModels: string[], currentModel: string) {
-  const candidates = [currentModel, ...availableModels].filter(Boolean).filter(isAllowedImageModel);
-  const matched = tier.modelHints
-    .map((hint) => candidates.find((model) => model.toLowerCase().includes(hint.toLowerCase())))
-    .find(Boolean);
-  return matched || candidates[0] || currentModel;
 }
 
 function createAgentDefaults(agent: IndustryAgent) {
@@ -3419,7 +3380,6 @@ export default function App() {
   const [isMobileViewport, setIsMobileViewport] = useState(() => window.innerWidth <= 900);
   const [mobileStudioTab, setMobileStudioTab] = useState<MobileStudioTab>("create");
   const [mobileWorksFilter, setMobileWorksFilter] = useState<MobileWorksFilter>("all");
-  const [selectedMobileQualityTierId, setSelectedMobileQualityTierId] = useState<MobileQualityTierId>("standard");
   const [selectedMobileSizePresetId, setSelectedMobileSizePresetId] = useState<MobileSizePresetId>("ecommerce-main");
   const [isAutoPromptAnalysisEnabled, setIsAutoPromptAnalysisEnabled] = useState(() =>
     loadBooleanSetting("imageStudioAutoPromptAnalysisEnabled", true),
@@ -3541,9 +3501,8 @@ export default function App() {
     });
     return ordered.slice(0, 6);
   }, [models, selectedModel]);
-  const selectedMobileQualityTier = MOBILE_QUALITY_TIERS.find((tier) => tier.id === selectedMobileQualityTierId) || MOBILE_QUALITY_TIERS[0];
   const selectedMobileSizePreset = MOBILE_SIZE_PRESETS.find((preset) => preset.id === selectedMobileSizePresetId) || MOBILE_SIZE_PRESETS[0];
-  const mobilePointsPerGeneration = isMobileViewport ? selectedMobileQualityTier.points : platformConfig.pointsPerGeneration;
+  const mobilePointsPerGeneration = platformConfig.pointsPerGeneration;
   const mobileWorksRecords = useMemo(() => {
     const next: MobileWorkRecord[] = [];
     const seen = new Set<string>();
@@ -6436,15 +6395,6 @@ export default function App() {
     }
   }
 
-  function selectMobileQualityTier(tier: (typeof MOBILE_QUALITY_TIERS)[number]) {
-    setSelectedMobileQualityTierId(tier.id);
-    const nextModel = resolveMobileTierModel(tier, models, selectedModel);
-    if (nextModel && nextModel !== selectedModel) {
-      setSelectedModel(nextModel);
-    }
-    updateParams({ quality: tier.id === "standard" ? "standard" : "high" });
-  }
-
   function selectMobileSizePreset(preset: (typeof MOBILE_SIZE_PRESETS)[number]) {
     setSelectedMobileSizePresetId(preset.id);
     updateParams({ aspectRatio: preset.ratio });
@@ -7150,27 +7100,6 @@ function openAuthPanel(mode: "login" | "register" = "register") {
                       <img src={MOBILE_INDUSTRY_THUMBNAILS[agent.id]} alt="" />
                     </span>
                     <strong>{agent.name}</strong>
-                  </button>
-                ))}
-              </div>
-            </section>
-            <section className="mobile-create-section">
-              <div className="mobile-block-head">
-                <strong>图片质量</strong>
-                <span className="mobile-help-dot">?</span>
-              </div>
-              <div className="mobile-quality-grid">
-                {MOBILE_QUALITY_TIERS.map((tier) => (
-                  <button
-                    type="button"
-                    key={tier.id}
-                    className={`mobile-quality-card ${selectedMobileQualityTierId === tier.id ? "active" : ""}`}
-                    onClick={() => selectMobileQualityTier(tier)}
-                  >
-                    {tier.id === "standard" ? <ImagePlus size={22} /> : tier.id === "realistic" ? <Star size={24} /> : <Flame size={24} />}
-                    <strong>{tier.label}</strong>
-                    <small>{tier.points} 积分</small>
-                    <CheckCircle2 size={18} className="mobile-quality-check" />
                   </button>
                 ))}
               </div>
