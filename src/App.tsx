@@ -2026,6 +2026,11 @@ function formatError(detail: ErrorDetail) {
   }
 }
 
+function isSupabaseInfrastructureError(detail: ErrorDetail) {
+  const message = formatError(detail);
+  return /failed to fetch|fetch failed|dns_hostname_not_found|enotfound|nxdomain|authretryablefetcherror|temporary auth outage|http 502/i.test(message);
+}
+
 type HistoryPage = {
   records: HistoryRecord[];
   nextCursor?: number;
@@ -6035,26 +6040,38 @@ export default function App() {
     const nextStart = performance.now();
     if (nextStart - startIntentRef.current < 400) return;
     startIntentRef.current = nextStart;
+    let usedLocalPointFallback = false;
+    const locallyDebitedUser = {
+      ...platformUser,
+      points: Math.max(0, platformUser.points - mobilePointsPerGeneration),
+    };
     if (isSupabaseEnabled) {
       try {
         const nextPoints = await consumeGenerationPointsRemote(mobilePointsPerGeneration);
         syncPlatformUser({ ...platformUser, points: nextPoints ?? Math.max(0, platformUser.points - mobilePointsPerGeneration) });
       } catch (error) {
-        setAnalysisState({
-          status: "error",
-          mode: "send",
-          message: "",
-          error: formatError(error),
-        });
-        return;
+        if (isSupabaseInfrastructureError(error)) {
+          usedLocalPointFallback = true;
+          saveDemoPlatformSessionUser(locallyDebitedUser);
+          syncPlatformUser(locallyDebitedUser);
+        } else {
+          setAnalysisState({
+            status: "error",
+            mode: "send",
+            message: "",
+            error: formatError(error),
+          });
+          return;
+        }
       }
     } else {
-      const nextPoints = platformUser.points - mobilePointsPerGeneration;
-      syncPlatformUser({ ...platformUser, points: nextPoints });
+      usedLocalPointFallback = true;
+      saveDemoPlatformSessionUser(locallyDebitedUser);
+      syncPlatformUser(locallyDebitedUser);
     }
     const apiKeyReady = await verifyApiKeyBeforeGeneration();
     if (!apiKeyReady) {
-      if (isSupabaseEnabled) {
+      if (isSupabaseEnabled && !usedLocalPointFallback) {
         try {
           const refundedPoints = await refundGenerationPointsRemote(mobilePointsPerGeneration);
           syncPlatformUser({ ...platformUser, points: refundedPoints ?? platformUser.points });
@@ -6062,6 +6079,7 @@ export default function App() {
           syncPlatformUser({ ...platformUser, points: platformUser.points });
         }
       } else {
+        saveDemoPlatformSessionUser(platformUser);
         syncPlatformUser({ ...platformUser, points: platformUser.points });
       }
       return;
@@ -6648,6 +6666,23 @@ function openAuthPanel(mode: "login" | "register" = "register") {
         }
         setAuthForm({ email, password: "", confirmPassword: "" });
       } catch (error) {
+        if (isSupabaseInfrastructureError(error)) {
+          const fallbackUser: PlatformSessionUser = {
+            id: `degraded-${email}`,
+            email,
+            points: platformConfig.signupBonusPoints,
+            createdAt: Date.now(),
+            isAdmin: email.toLowerCase() === "461059476@qq.com",
+          };
+          saveDemoPlatformSessionUser(fallbackUser);
+          syncPlatformUser(fallbackUser);
+          setPlatformUsers([fallbackUser]);
+          closeAuthPanel();
+          enterStudio();
+          setAuthNotice("Supabase 登录暂时不可用，已切换到临时离线模式。");
+          setAuthForm({ email, password: "", confirmPassword: "" });
+          return;
+        }
         const message = formatError(error);
         if (/email not confirmed/i.test(message)) {
           const fallbackUser: PlatformSessionUser = {
