@@ -2027,8 +2027,11 @@ function formatError(detail: ErrorDetail) {
 }
 
 function isSupabaseInfrastructureError(detail: ErrorDetail) {
+  if (detail && typeof detail === "object" && !Array.isArray(detail) && Object.keys(detail as Record<string, unknown>).length === 0) {
+    return true;
+  }
   const message = formatError(detail);
-  return /failed to fetch|fetch failed|dns_hostname_not_found|enotfound|nxdomain|authretryablefetcherror|temporary auth outage|http 502/i.test(message);
+  return /failed to fetch|fetch failed|dns_hostname_not_found|enotfound|nxdomain|authretryablefetcherror|temporary auth outage|http 502|\{\}/i.test(message);
 }
 
 type HistoryPage = {
