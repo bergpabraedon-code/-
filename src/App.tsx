@@ -7100,6 +7100,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
                       <img src={MOBILE_INDUSTRY_THUMBNAILS[agent.id]} alt="" />
                     </span>
                     <strong>{agent.name}</strong>
+                    <small>{agent.tag}</small>
                   </button>
                 ))}
               </div>
