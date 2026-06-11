@@ -23,6 +23,7 @@ export type PlatformSessionUser = {
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL?.trim() || "";
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim() || "";
+const SUPABASE_BROWSER_PROXY_PATH = "/api/supabase";
 const SETTINGS_ROW_ID = "default";
 const SUPABASE_DEMO_SESSION_STORAGE_KEY = "imageStudioSupabaseDemoSession";
 
@@ -41,8 +42,13 @@ export const DEFAULT_PLATFORM_CONFIG: PlatformConfig = {
 
 export const isSupabaseEnabled = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
 
+function resolveBrowserSupabaseUrl() {
+  if (typeof window === "undefined") return SUPABASE_URL;
+  return `${window.location.origin}${SUPABASE_BROWSER_PROXY_PATH}`;
+}
+
 export const supabase = isSupabaseEnabled
-  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  ? createClient(resolveBrowserSupabaseUrl(), SUPABASE_ANON_KEY, {
     auth: {
       persistSession: true,
       autoRefreshToken: true,

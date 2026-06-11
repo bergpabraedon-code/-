@@ -467,6 +467,25 @@ function readJsonBody(req: IncomingMessage): Promise<ProxyBody> {
   });
 }
 
+function readRawBody(req: IncomingMessage): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    req.on("data", (chunk) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      bytes += buffer.length;
+      if (bytes > MAX_REQUEST_BYTES) {
+        reject(new Error("请求体过大"));
+        req.destroy();
+        return;
+      }
+      chunks.push(buffer);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
 function sendJson(res: ServerResponse, status: number, payload: unknown) {
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -1079,6 +1098,51 @@ function endpoint(baseUrl: string, path: string) {
     ? path.slice(3)
     : path;
   return `${cleanBase}${cleanPath}`;
+}
+
+function resolveSupabaseProxyPath(url = "") {
+  const [pathname = "/", search = ""] = url.split("?");
+  const relativePath = pathname.replace(/^\/?api\/supabase\/?/, "").replace(/^\/+/, "");
+  const normalizedPath = relativePath ? `/${relativePath}` : "";
+  return `${normalizedPath}${search ? `?${search}` : ""}`;
+}
+
+async function proxySupabaseRequest(req: IncomingMessage, res: ServerResponse) {
+  if (!SUPABASE_URL) {
+    sendJson(res, 500, { ok: false, error: "未配置 VITE_SUPABASE_URL" });
+    return;
+  }
+
+  const method = (req.method || "GET").toUpperCase();
+  const body = method === "GET" || method === "HEAD" ? undefined : await readRawBody(req);
+  const targetUrl = endpoint(SUPABASE_URL, resolveSupabaseProxyPath(req.url || "/"));
+  const headers = new Headers();
+
+  for (const [key, value] of Object.entries(req.headers)) {
+    if (!value) continue;
+    const lowerKey = key.toLowerCase();
+    if (lowerKey === "host" || lowerKey === "connection" || lowerKey === "content-length") continue;
+    if (Array.isArray(value)) {
+      value.forEach((entry) => headers.append(key, entry));
+      continue;
+    }
+    headers.set(key, value);
+  }
+
+  const response = await fetchWithTimeout(targetUrl, {
+    method,
+    headers,
+    body: body ? new Uint8Array(body) : undefined,
+    redirect: "manual",
+  });
+
+  res.statusCode = response.status;
+  response.headers.forEach((value, key) => {
+    if (key.toLowerCase() === "content-length") return;
+    res.setHeader(key, value);
+  });
+  const responseBuffer = Buffer.from(await response.arrayBuffer());
+  res.end(responseBuffer);
 }
 
 function publicBaseUrlFromRequest(_req: IncomingMessage) {
@@ -3459,6 +3523,16 @@ function imageProxyPlugin(): PluginOption {
           return;
         }
         res.end(record.bytes);
+      });
+
+      server.middlewares.use("/api/supabase", async (req, res) => {
+        try {
+          await proxySupabaseRequest(req, res);
+        } catch (error) {
+          const status = httpStatusFromDetail(error) || 500;
+          const summary = safeErrorSummary(error);
+          sendJson(res, status, { ok: false, detail: { status, error: summary.message, raw: summary.raw } });
+        }
       });
 
       server.middlewares.use("/api/square/feed", (req, res) => {
