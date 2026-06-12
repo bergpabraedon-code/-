@@ -482,6 +482,7 @@ type AppPage = "home" | "studio" | "square" | "admin";
 type MobileStudioTab = "create" | "works" | "account";
 type MobileWorksFilter = "all" | "saved" | "history";
 type MobileSizePresetId = "ecommerce-main" | "xiaohongshu-cover" | "vertical-poster" | "square";
+type MobileQualityTierId = "standard" | "realistic" | "creative";
 type MobileWorkRecord = {
   id: string;
   status: JobStatus;
@@ -1409,6 +1410,17 @@ const MOBILE_INDUSTRY_THUMBNAILS: Record<string, string> = {
 };
 const MOBILE_REFERENCE_TEMPLATE_IMAGES = [mobileRef1Url, mobileRef2Url, mobileRef3Url, mobileRef4Url];
 const MOBILE_WORK_TEMPLATE_IMAGES = [mobileWork1Url, mobileWork2Url, mobileWork3Url, mobileWork4Url, mobileWork5Url, mobileWork6Url];
+const MOBILE_QUALITY_TIERS: Array<{
+  id: MobileQualityTierId;
+  label: string;
+  pointsLabel: string;
+  quality: ImageParams["quality"];
+  icon: "image" | "star" | "flame";
+}> = [
+  { id: "standard", label: "一般图片", pointsLabel: "2 积分", quality: "auto", icon: "image" },
+  { id: "realistic", label: "高度真实", pointsLabel: "3 积分", quality: "high", icon: "star" },
+  { id: "creative", label: "高级创意", pointsLabel: "4 积分", quality: "medium", icon: "flame" },
+];
 
 const MOBILE_SIZE_PRESETS: Array<{
   id: MobileSizePresetId;
@@ -1460,6 +1472,12 @@ function hasAgentUserOverrides(agent: IndustryAgent, values: Record<string, stri
     const defaultValue = (agent.defaultValues[field.id] || field.defaultValue || "").trim();
     return value.length > 0 && value !== defaultValue;
   });
+}
+
+function resolveMobileQualityTierId(quality: string): MobileQualityTierId {
+  if (quality === "high") return "realistic";
+  if (quality === "medium") return "creative";
+  return "standard";
 }
 
 function buildAgentPrompt(agent: IndustryAgent, values: Record<string, string>, variant: PromptVariant) {
@@ -3502,6 +3520,8 @@ export default function App() {
     return ordered.slice(0, 6);
   }, [models, selectedModel]);
   const selectedMobileSizePreset = MOBILE_SIZE_PRESETS.find((preset) => preset.id === selectedMobileSizePresetId) || MOBILE_SIZE_PRESETS[0];
+  const selectedMobileQualityTierId = resolveMobileQualityTierId(params.quality);
+  const selectedMobileQualityTier = MOBILE_QUALITY_TIERS.find((tier) => tier.id === selectedMobileQualityTierId) || MOBILE_QUALITY_TIERS[0];
   const mobilePointsPerGeneration = platformConfig.pointsPerGeneration;
   const mobileWorksRecords = useMemo(() => {
     const next: MobileWorkRecord[] = [];
@@ -7069,9 +7089,13 @@ function openAuthPanel(mode: "login" | "register" = "register") {
               </div>
             </div>
             <div className="mobile-inspiration-card">
-              <div>
+              <div className="mobile-inspiration-copy">
                 <span className="mobile-inspiration-tag">每日灵感</span>
                 <strong>{selectedAgent?.name || "春日花海"}</strong>
+                <p>{selectedAgent?.scenario || "浪漫花海，春光明媚，治愈氛围"}</p>
+              </div>
+              <div className="mobile-inspiration-visual" aria-hidden="true">
+                <img src={mobileInspirationSpringUrl} alt="" />
               </div>
               <div className="mobile-inspiration-actions">
                 <button
@@ -7086,7 +7110,6 @@ function openAuthPanel(mode: "login" | "register" = "register") {
             <section className="mobile-create-section">
               <div className="mobile-block-head">
                 <strong>选择行业</strong>
-                <button type="button">更多 <ChevronRight size={12} /></button>
               </div>
               <div className="mobile-industry-grid">
                 {mobileTemplateAgents.map((agent) => (
@@ -7101,6 +7124,33 @@ function openAuthPanel(mode: "login" | "register" = "register") {
                     </span>
                     <strong>{agent.name}</strong>
                     <small>{agent.tag}</small>
+                  </button>
+                ))}
+              </div>
+            </section>
+            <section className="mobile-create-section">
+              <div className="mobile-block-head">
+                <strong>图片质量</strong>
+                <span className="mobile-help-dot">?</span>
+              </div>
+              <div className="mobile-quality-grid">
+                {MOBILE_QUALITY_TIERS.map((tier) => (
+                  <button
+                    type="button"
+                    key={tier.id}
+                    className={`mobile-quality-card ${selectedMobileQualityTier.id === tier.id ? "active" : ""}`}
+                    onClick={() => updateParams({ quality: tier.quality })}
+                  >
+                    <span className={`mobile-quality-icon ${tier.icon}`}>
+                      {tier.icon === "image" ? <ImagePlus size={24} /> : tier.icon === "star" ? <Star size={24} /> : <Flame size={24} />}
+                    </span>
+                    <strong>{tier.label}</strong>
+                    <small>{tier.pointsLabel}</small>
+                    {selectedMobileQualityTier.id === tier.id ? (
+                      <span className="mobile-quality-check" aria-hidden="true">
+                        <CheckCircle2 size={18} />
+                      </span>
+                    ) : null}
                   </button>
                 ))}
               </div>
@@ -7122,38 +7172,51 @@ function openAuthPanel(mode: "login" | "register" = "register") {
               </div>
             </section>
             <section className="mobile-create-section">
-              <div className="mobile-block-head">
-                <strong>常用尺寸与数量</strong>
-              </div>
               <div className="mobile-quick-selects">
                 <label className="mobile-quick-select">
                   <span>常用尺寸</span>
-                  <select
-                    value={selectedMobileSizePresetId}
-                    onChange={(event) => {
-                      const preset = MOBILE_SIZE_PRESETS.find((item) => item.id === event.target.value);
-                      if (preset) selectMobileSizePreset(preset);
-                    }}
-                  >
-                    {MOBILE_SIZE_PRESETS.map((preset) => (
-                      <option key={preset.id} value={preset.id}>
-                        {preset.label} · {preset.ratio}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="mobile-select-shell">
+                    <span className="mobile-select-icon" aria-hidden="true">
+                      <Square size={18} />
+                    </span>
+                    <select
+                      value={selectedMobileSizePresetId}
+                      onChange={(event) => {
+                        const preset = MOBILE_SIZE_PRESETS.find((item) => item.id === event.target.value);
+                        if (preset) selectMobileSizePreset(preset);
+                      }}
+                    >
+                      {MOBILE_SIZE_PRESETS.map((preset) => (
+                        <option key={preset.id} value={preset.id}>
+                          {preset.label} · {preset.ratio}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="mobile-select-caret" aria-hidden="true">
+                      <ChevronRight size={18} />
+                    </span>
+                  </div>
                 </label>
                 <label className="mobile-quick-select">
                   <span>生成数量</span>
-                  <select
-                    value={params.batchCount}
-                    onChange={(event) => updateParams({ batchCount: Number(event.target.value) })}
-                  >
-                    {[1, 2, 4].map((count) => (
-                      <option key={count} value={count}>
-                        {count} 张
-                      </option>
-                    ))}
-                  </select>
+                  <div className="mobile-select-shell">
+                    <span className="mobile-select-icon" aria-hidden="true">
+                      <Database size={18} />
+                    </span>
+                    <select
+                      value={params.batchCount}
+                      onChange={(event) => updateParams({ batchCount: Number(event.target.value) })}
+                    >
+                      {[1, 2, 4].map((count) => (
+                        <option key={count} value={count}>
+                          {count} 张
+                        </option>
+                      ))}
+                    </select>
+                    <span className="mobile-select-caret" aria-hidden="true">
+                      <ChevronRight size={18} />
+                    </span>
+                  </div>
                 </label>
               </div>
             </section>
@@ -7166,14 +7229,21 @@ function openAuthPanel(mode: "login" | "register" = "register") {
                 <button type="button" className="mobile-reference-add" onClick={() => fileInputRef.current?.click()}>
                   <Plus size={18} />
                   <small>上传图片</small>
+                  <span>可选</span>
                 </button>
                 {referenceImages.length > 0 ? referenceImages.slice(0, 4).map((image) => (
                   <button type="button" key={image.id} className="mobile-reference-thumb" onClick={() => removeReference(image.id)} title="点击移除参考图">
+                    <span className="mobile-reference-remove" aria-hidden="true">
+                      <X size={12} />
+                    </span>
                     {image.dataUrl ? <img src={image.thumbnailDataUrl || image.dataUrl} alt="" /> : <AlertCircle size={16} />}
                   </button>
                 )) : (
                   MOBILE_REFERENCE_TEMPLATE_IMAGES.map((imageUrl, index) => (
                     <span key={imageUrl} className="mobile-reference-sample">
+                      <span className="mobile-reference-remove" aria-hidden="true">
+                        <X size={12} />
+                      </span>
                       <img src={imageUrl} alt={`参考图 ${index + 1}`} />
                     </span>
                   ))
@@ -8489,7 +8559,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
           onConfirm={() => void confirmBulkDelete()}
         />
       )}
-      {showOnboarding && (
+      {showOnboarding && !isMobileViewport && (
         <OnboardingGuide
           step={onboardingStep}
           canGenerate={canGenerate}
