@@ -7006,7 +7006,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
             </div>
           </header>
         )}
-        {(canManageModels || !isDesktopStudioLayout) && <header className="topbar">
+        {!isDesktopStudioLayout && <header className="topbar">
           <div className="topbar-cluster">
             <SidebarToggleButton
               side="left"
