@@ -3599,8 +3599,8 @@ export default function App() {
   const isDesktopStudioLayout = !isMobileViewport;
   const useLegacyDesktopStudio = false;
   const isMobileCreateTabVisible = isMobileViewport && mobileStudioTab === "create";
-  const isWorksTabVisible = isMobileViewport && mobileStudioTab === "works";
-  const isAccountTabVisible = isMobileViewport && mobileStudioTab === "account";
+  const isWorksTabVisible = mobileStudioTab === "works";
+  const isAccountTabVisible = mobileStudioTab === "account";
   const canManageModels = platformUser?.isAdmin === true;
 
   const visibleStats = useMemo(() => {
@@ -6986,9 +6986,9 @@ function openAuthPanel(mode: "login" | "register" = "register") {
               <strong>美图精灵</strong>
             </div>
             <nav aria-label="桌面导航">
-              <button type="button" className="active">创作</button>
-              <button type="button" onClick={() => switchMobileStudioTab("works")}>作品</button>
-              <button type="button" onClick={() => platformUser ? switchMobileStudioTab("account") : openAuthPanel("login")}>我的</button>
+              <button type="button" className={mobileStudioTab === "create" ? "active" : ""} onClick={() => switchMobileStudioTab("create")}>创作</button>
+              <button type="button" className={mobileStudioTab === "works" ? "active" : ""} onClick={() => switchMobileStudioTab("works")}>作品</button>
+              <button type="button" className={mobileStudioTab === "account" ? "active" : ""} onClick={() => platformUser ? switchMobileStudioTab("account") : openAuthPanel("login")}>我的</button>
             </nav>
             <div className="desktop-consumer-account">
               <span className="desktop-points"><Sparkles size={15} /> {platformUser ? platformUser.points : 0} 积分</span>
@@ -7124,7 +7124,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
             </article>
           </section>
         )}
-        {isDesktopStudioLayout && !useLegacyDesktopStudio && (
+        {isDesktopStudioLayout && !useLegacyDesktopStudio && mobileStudioTab === "create" && (
           <section className="desktop-create-workbench" aria-label="桌面创作页">
             <aside className="desktop-create-left">
               <article className="desktop-inspiration-card">
@@ -7242,7 +7242,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
                       onClick={() => updateParams({ quality: tier.quality })}
                     >
                       <span>{tier.icon === "image" ? <ImagePlus size={34} /> : tier.icon === "star" ? <Star size={34} /> : <Flame size={34} />}</span>
-                      <strong>{tier.label}<small>{tier.pointsLabel}</small></strong>
+                      <strong>{tier.label}<small>{mobilePointsPerGeneration} 积分</small></strong>
                       {selectedMobileQualityTier.id === tier.id && <CheckCircle2 size={20} />}
                     </button>
                   ))}
@@ -7334,7 +7334,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
                       {tier.icon === "image" ? <ImagePlus size={24} /> : tier.icon === "star" ? <Star size={24} /> : <Flame size={24} />}
                     </span>
                     <strong>{tier.label}</strong>
-                    <small>{tier.pointsLabel}</small>
+                    <small>{mobilePointsPerGeneration} 积分</small>
                     {selectedMobileQualityTier.id === tier.id ? (
                       <span className="mobile-quality-check" aria-hidden="true">
                         <CheckCircle2 size={18} />

@@ -6497,6 +6497,46 @@ textarea:focus-visible {
 }
 
 @media (min-width: 901px) {
+  .app-shell.consumer-studio-shell.settings-open {
+    --right-column: 0px;
+  }
+
+  .consumer-studio-shell .mobile-works-page,
+  .consumer-studio-shell .mobile-account-page {
+    width: 100%;
+    min-height: 0;
+    gap: 20px;
+    padding: 28px 32px 40px;
+    overflow: auto;
+    background:
+      radial-gradient(circle at 50% -20%, rgba(225, 242, 233, 0.62), transparent 44%),
+      #f8f9f6;
+  }
+
+  .consumer-studio-shell .mobile-page-head strong {
+    font-size: 30px;
+  }
+
+  .consumer-studio-shell .mobile-works-filter {
+    gap: 28px;
+  }
+
+  .consumer-studio-shell .mobile-work-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 18px;
+  }
+
+  .consumer-studio-shell .mobile-work-card {
+    padding: 10px;
+    border-radius: 18px;
+    background: #fff;
+    box-shadow: 0 10px 28px rgba(23, 40, 30, 0.07);
+  }
+
+  .consumer-studio-shell .mobile-work-thumb {
+    border-radius: 13px;
+  }
+
   .consumer-studio-shell > .settings-panel {
     position: fixed;
     top: 68px;
