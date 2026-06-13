@@ -7472,8 +7472,8 @@ textarea:focus-visible {
     width: 100%;
     max-width: 390px;
     margin: 0 auto;
-    gap: 18px;
-    padding: 20px 12px 96px;
+    gap: 10px;
+    padding: 26px 20px 24px 27px;
   }
 
   .mobile-create-head,
@@ -7483,106 +7483,126 @@ textarea:focus-visible {
 
   .mobile-create-head strong,
   .mobile-page-head strong {
-    font-size: 26px;
+    font-size: 22px;
     font-weight: 950;
+    line-height: 1;
     letter-spacing: -0.04em;
   }
 
   .mobile-create-head span {
     display: block;
-    margin-top: 6px;
+    margin-top: 2px;
     color: #7c837c;
-    font-size: 14px;
+    font-size: 12px;
     font-weight: 520;
+    line-height: 1.2;
   }
 
   .mobile-head-icon {
-    width: 54px;
-    height: 54px;
+    width: 34px;
+    height: 34px;
     border: 1px solid rgba(223, 227, 220, 0.96);
     border-radius: 50%;
     background: #fff;
-    box-shadow: 0 10px 24px rgba(17, 17, 17, 0.07);
+    box-shadow: 0 7px 16px rgba(17, 17, 17, 0.06);
   }
 
   .mobile-inspiration-card {
     display: grid;
-    min-height: 174px;
-    grid-template-columns: minmax(0, 1fr) 42%;
+    min-height: 102px;
+    grid-template-columns: minmax(0, 1fr) 50%;
     align-items: stretch;
     justify-content: stretch;
     overflow: hidden;
     padding: 0;
     border: 1px solid rgba(224, 228, 221, 0.92);
-    border-radius: 22px;
+    border-radius: 13px;
     background: linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(248, 251, 247, 0.99) 100%);
-    box-shadow: 0 14px 26px rgba(17, 17, 17, 0.06);
+    box-shadow: 0 9px 20px rgba(17, 17, 17, 0.06);
   }
 
   .mobile-inspiration-copy {
-    gap: 6px;
-    padding: 20px 18px;
+    gap: 3px;
+    padding: 13px 11px;
   }
 
   .mobile-inspiration-visual::before {
-    inset: 0 auto 0 -52%;
-    width: 78%;
+    display: none;
+  }
+
+  .mobile-inspiration-visual img {
+    object-position: right center;
   }
 
   .mobile-inspiration-tag {
-    min-height: 30px;
-    padding: 0 12px;
+    min-height: 19px;
+    padding: 0 7px;
     background: rgba(248, 252, 248, 0.92);
     color: #218753;
-    font-size: 11px;
+    font-size: 9px;
     font-weight: 800;
   }
 
   .mobile-inspiration-card strong {
     display: block;
-    margin-top: 4px;
+    margin-top: 2px;
     color: #1d201d;
-    font-size: 26px;
+    font-size: 17px;
     font-weight: 950;
     line-height: 1.2;
   }
 
   .mobile-inspiration-card p {
-    font-size: 12px;
-    line-height: 1.65;
+    overflow: hidden;
+    max-width: 150px;
+    font-size: 10px;
+    line-height: 1.4;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .mobile-inspiration-action {
-    min-height: 48px;
-    padding: 0 22px;
-    border: 1px solid rgba(223, 227, 221, 0.95);
+    width: 58px;
+    min-height: 28px;
+    padding: 0;
+    border: 0;
     border-radius: 999px;
-    background: #fff;
-    color: #209057;
-    font-size: 14px;
-    box-shadow: 0 8px 18px rgba(17, 17, 17, 0.08);
+    background: transparent;
+    color: transparent;
+    font-size: 0;
+    box-shadow: none;
+    opacity: 0;
   }
 
   .mobile-inspiration-actions {
-    right: 14px;
-    bottom: 14px;
+    right: 10px;
+    bottom: 9px;
   }
 
   .mobile-create-section {
-    gap: 10px;
+    gap: 4px;
+  }
+
+  .mobile-block-head {
+    min-height: 17px;
   }
 
   .mobile-block-head strong {
     color: #151a16;
-    font-size: 18px;
+    font-size: 15px;
     font-weight: 900;
+    line-height: 1;
+  }
+
+  .mobile-block-head small {
+    line-height: 1;
   }
 
   .mobile-industry-grid,
   .mobile-size-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
+    gap: 9px 10px;
     overflow: visible;
     padding-bottom: 0;
     scrollbar-width: auto;
@@ -7596,45 +7616,58 @@ textarea:focus-visible {
   }
 
   .mobile-quality-grid {
-    gap: 10px;
+    gap: 7px;
   }
 
   .mobile-quality-card {
-    min-height: 112px;
-    gap: 8px;
-    padding: 16px 8px;
-    border-radius: 18px;
+    min-height: 68px;
+    gap: 2px;
+    padding: 8px 5px 6px;
+    border-radius: 10px;
   }
 
   .mobile-quality-card strong,
   .mobile-quality-card small {
-    font-size: 12px;
+    font-size: 10px;
   }
 
   .mobile-quality-check {
-    top: 8px;
-    right: 8px;
+    top: 5px;
+    right: 5px;
+  }
+
+  .mobile-quality-icon svg {
+    width: 21px;
+    height: 21px;
+  }
+
+  .mobile-help-dot {
+    width: 17px;
+    height: 17px;
+    font-size: 10px;
   }
 
   .mobile-industry-card {
     display: grid;
     width: 100%;
+    height: 102px;
     min-width: 0;
-    min-height: 172px;
+    min-height: 0;
     grid-template-columns: 1fr;
     align-items: start;
     gap: 0;
     padding: 0;
     border: 1px solid rgba(223, 226, 220, 0.95);
-    border-radius: 18px;
+    border-radius: 12px;
     background: linear-gradient(180deg, #ffffff 0%, #fbfcfa 100%);
-    box-shadow: 0 10px 20px rgba(17, 17, 17, 0.06);
+    box-shadow: 0 7px 15px rgba(17, 17, 17, 0.06);
   }
 
   .mobile-industry-thumb {
     width: 100% !important;
-    height: 98px !important;
-    border-radius: 18px 18px 0 0 !important;
+    height: 60px !important;
+    min-height: 60px !important;
+    border-radius: 12px 12px 0 0 !important;
     overflow: hidden;
     background: #eef2ee !important;
     color: rgba(255, 255, 255, 0) !important;
@@ -7648,17 +7681,17 @@ textarea:focus-visible {
 
   .mobile-industry-card strong {
     color: #222721;
-    font-size: 14px;
+    font-size: 12px;
     font-weight: 900;
     line-height: 1.25;
-    padding: 12px 14px 0;
+    padding: 7px 10px 0;
   }
 
   .mobile-industry-card small {
     color: #879088;
-    font-size: 11px;
+    font-size: 10px;
     line-height: 1.35;
-    padding: 0 14px 14px;
+    padding: 1px 10px 3px;
   }
 
   .mobile-industry-card.active {
@@ -7691,60 +7724,111 @@ textarea:focus-visible {
   }
 
   .mobile-create-textarea {
-    height: auto !important;
-    min-height: 110px !important;
-    max-height: none;
-    padding: 16px 16px 34px;
-    border-radius: 18px;
+    height: 46px !important;
+    min-height: 46px !important;
+    max-height: 46px;
+    padding: 10px 11px 20px;
+    border-radius: 10px;
     background: #fff;
-    font-size: 13px;
-    line-height: 1.45;
+    font-size: 10px;
+    line-height: 1.35;
+  }
+
+  .mobile-textarea-wrap small {
+    right: 10px;
+    bottom: 7px;
+    font-size: 9px;
   }
 
   .mobile-reference-row {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     overflow-x: auto;
   }
 
   .mobile-reference-thumb {
-    width: 76px;
-    height: 76px;
-    border-radius: 16px;
+    width: 54px;
+    height: 54px;
+    border-radius: 9px;
+  }
+
+  .mobile-reference-add {
+    width: 74px;
+    height: 54px;
+    gap: 1px;
+    border-width: 1px;
+    border-radius: 10px;
+  }
+
+  .mobile-reference-add small {
+    font-size: 9px;
+  }
+
+  .mobile-reference-add span {
+    font-size: 8px;
+  }
+
+  .mobile-reference-sample {
+    width: 54px;
+    height: 54px;
+    border-radius: 9px;
+  }
+
+  .mobile-reference-remove {
+    top: 2px;
+    right: 2px;
+    width: 16px;
+    height: 16px;
   }
 
   .mobile-quick-selects {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
+    gap: 14px;
+  }
+
+  .mobile-quick-select {
+    gap: 3px;
   }
 
   .mobile-quick-select span {
-    font-size: 13px;
+    font-size: 11px;
+    line-height: 1.2;
   }
 
   .mobile-select-shell {
-    min-height: 58px;
-    padding: 0 14px;
-    border-radius: 22px;
+    height: 32px;
+    min-height: 0;
+    box-sizing: border-box;
+    padding: 0 9px;
+    border-radius: 16px;
   }
 
   .mobile-quick-select select {
-    min-height: 58px;
-    font-size: 13px;
+    min-height: 30px;
+    padding: 0 7px;
+    font-size: 10px;
+  }
+
+  .mobile-select-icon svg,
+  .mobile-select-caret svg {
+    width: 14px;
+    height: 14px;
   }
 
   .mobile-generate-button {
     display: flex;
-    min-height: 66px;
+    width: calc(100% + 14px);
+    min-height: 44px;
+    margin-left: -11px;
     align-items: center;
     justify-content: center;
     gap: 8px;
     border-radius: 999px;
     background: linear-gradient(90deg, #59c285 0%, #2d9a61 100%);
-    font-size: 20px;
+    font-size: 17px;
     letter-spacing: 0.01em;
-    box-shadow: 0 14px 28px rgba(19, 148, 80, 0.25);
+    box-shadow: 0 10px 22px rgba(19, 148, 80, 0.24);
   }
 
   .mobile-works-page,

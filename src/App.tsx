@@ -27,6 +27,7 @@ import {
   Send,
   Settings2,
   ShieldCheck,
+  Sparkles,
   Star,
   Square,
   CheckSquare,
@@ -7223,7 +7224,6 @@ function openAuthPanel(mode: "login" | "register" = "register") {
             <section className="mobile-create-section">
               <div className="mobile-block-head">
                 <strong>上传参考图</strong>
-                <small>{referenceImages.length > 0 ? `${referenceImages.length} 张` : "可选"}</small>
               </div>
               <div className="mobile-reference-row">
                 <button type="button" className="mobile-reference-add" onClick={() => fileInputRef.current?.click()}>
@@ -7256,7 +7256,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
               disabled={!canRequestGenerate}
               onClick={() => handleMobileGenerateClick()}
             >
-              <WandSparkles size={17} />
+              <Sparkles size={17} />
               立即生成
             </button>
             <input
