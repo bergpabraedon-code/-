@@ -3597,6 +3597,7 @@ export default function App() {
     }));
   }, [filteredMobileWorksRecords, params]);
   const isDesktopStudioLayout = !isMobileViewport;
+  const useLegacyDesktopStudio = false;
   const isMobileCreateTabVisible = isMobileViewport && mobileStudioTab === "create";
   const isWorksTabVisible = isMobileViewport && mobileStudioTab === "works";
   const isAccountTabVisible = isMobileViewport && mobileStudioTab === "account";
@@ -6890,7 +6891,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
   return (
     <>
     {frontendUpdateNotice}
-    <div className={`app-shell ${canManageModels && isLeftSidebarOpen ? "left-open" : "left-closed"} ${canManageModels && isSettingsOpen ? "settings-open" : "settings-closed"} ${canManageModels ? "admin-studio-shell" : "consumer-studio-shell"}`}>
+    <div className={`app-shell ${!isDesktopStudioLayout && canManageModels && isLeftSidebarOpen ? "left-open" : "left-closed"} ${canManageModels && isSettingsOpen ? "settings-open" : "settings-closed"} ${isDesktopStudioLayout ? "consumer-studio-shell" : canManageModels ? "admin-studio-shell" : "consumer-studio-shell"}`}>
       <button
         className="drawer-backdrop"
         type="button"
@@ -6900,7 +6901,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
           setIsSettingsOpen(false);
         }}
       />
-      {canManageModels && <aside className={`sidebar ${isLeftSidebarOpen ? "open" : "closed"}`}>
+      {!isDesktopStudioLayout && canManageModels && <aside className={`sidebar ${isLeftSidebarOpen ? "open" : "closed"}`}>
         <div className="brand">
           <div className="brand-main">
             <div className="brand-mark">
@@ -6978,7 +6979,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
       </aside>}
 
       <main className="workspace">
-        {isDesktopStudioLayout && !canManageModels && (
+        {isDesktopStudioLayout && (
           <header className="desktop-consumer-nav">
             <div className="desktop-consumer-brand">
               <span><Sparkles size={21} /></span>
@@ -6991,6 +6992,12 @@ function openAuthPanel(mode: "login" | "register" = "register") {
             </nav>
             <div className="desktop-consumer-account">
               <span className="desktop-points"><Sparkles size={15} /> {platformUser ? platformUser.points : 0} 积分</span>
+              {canManageModels && (
+                <button type="button" className="desktop-model-settings" onClick={() => setIsSettingsOpen(true)}>
+                  <Settings2 size={16} />
+                  模型配置
+                </button>
+              )}
               <button type="button" onClick={() => platformUser ? switchMobileStudioTab("account") : openAuthPanel("login")}>
                 <span className="desktop-avatar"><img src={pcRecent4Url} alt="" /></span>
                 <strong>{platformUser ? platformUser.email.split("@")[0] : "登录"}</strong>
@@ -7058,7 +7065,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
             )}
           </div>
         </header>}
-        {isDesktopStudioLayout && canManageModels && (
+        {isDesktopStudioLayout && useLegacyDesktopStudio && (
           <section className="consumer-studio-hub">
             <article className="consumer-focus-card">
               <div className="consumer-focus-copy">
@@ -7117,7 +7124,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
             </article>
           </section>
         )}
-        {isDesktopStudioLayout && !canManageModels && (
+        {isDesktopStudioLayout && !useLegacyDesktopStudio && (
           <section className="desktop-create-workbench" aria-label="桌面创作页">
             <aside className="desktop-create-left">
               <article className="desktop-inspiration-card">
@@ -7658,7 +7665,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
           </section>
         )}
 
-        {isDesktopStudioLayout && canManageModels && (
+        {isDesktopStudioLayout && useLegacyDesktopStudio && (
         <section className="canvas" ref={canvasRef} onScroll={handleCanvasScroll}>
           {visibleRecords.length === 0 && !isLoadingMainRecords ? (
             <div className="empty-state">
@@ -7738,7 +7745,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
         </section>
         )}
 
-        {isDesktopStudioLayout && canManageModels && (
+        {isDesktopStudioLayout && useLegacyDesktopStudio && (
         <form
           className={[
             "composer",
