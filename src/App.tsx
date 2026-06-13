@@ -81,6 +81,12 @@ import mobileIndustryEcommerceUrl from "./assets/mobile-template/industry-ecomme
 import mobileIndustryMedicalUrl from "./assets/mobile-template/industry-medical.png";
 import mobileIndustryXhsUrl from "./assets/mobile-template/industry-xhs.png";
 import mobileInspirationSpringUrl from "./assets/mobile-template/inspiration-spring.png";
+import pcRecent1Url from "./assets/mobile-template/pc-recent-1.png";
+import pcRecent2Url from "./assets/mobile-template/pc-recent-2.png";
+import pcRecent3Url from "./assets/mobile-template/pc-recent-3.png";
+import pcRecent4Url from "./assets/mobile-template/pc-recent-4.png";
+import pcRecent5Url from "./assets/mobile-template/pc-recent-5.png";
+import pcRecent6Url from "./assets/mobile-template/pc-recent-6.png";
 import mobileRef1Url from "./assets/mobile-template/ref-1.png";
 import mobileRef2Url from "./assets/mobile-template/ref-2.png";
 import mobileRef3Url from "./assets/mobile-template/ref-3.png";
@@ -1410,6 +1416,7 @@ const MOBILE_INDUSTRY_THUMBNAILS: Record<string, string> = {
   "brand-poster": mobileIndustryBrandUrl,
 };
 const MOBILE_REFERENCE_TEMPLATE_IMAGES = [mobileRef1Url, mobileRef2Url, mobileRef3Url, mobileRef4Url];
+const PC_RECENT_TEMPLATE_IMAGES = [pcRecent1Url, pcRecent2Url, pcRecent3Url, pcRecent4Url, pcRecent5Url, pcRecent6Url];
 const MOBILE_WORK_TEMPLATE_IMAGES = [mobileWork1Url, mobileWork2Url, mobileWork3Url, mobileWork4Url, mobileWork5Url, mobileWork6Url];
 const MOBILE_QUALITY_TIERS: Array<{
   id: MobileQualityTierId;
@@ -6883,7 +6890,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
   return (
     <>
     {frontendUpdateNotice}
-    <div className={`app-shell ${isLeftSidebarOpen ? "left-open" : "left-closed"} ${isSettingsOpen ? "settings-open" : "settings-closed"}`}>
+    <div className={`app-shell ${canManageModels && isLeftSidebarOpen ? "left-open" : "left-closed"} ${canManageModels && isSettingsOpen ? "settings-open" : "settings-closed"} ${canManageModels ? "admin-studio-shell" : "consumer-studio-shell"}`}>
       <button
         className="drawer-backdrop"
         type="button"
@@ -6893,7 +6900,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
           setIsSettingsOpen(false);
         }}
       />
-      <aside className={`sidebar ${isLeftSidebarOpen ? "open" : "closed"}`}>
+      {canManageModels && <aside className={`sidebar ${isLeftSidebarOpen ? "open" : "closed"}`}>
         <div className="brand">
           <div className="brand-main">
             <div className="brand-mark">
@@ -6968,10 +6975,31 @@ function openAuthPanel(mode: "login" | "register" = "register") {
           {isLoadingSidebarRecords && <div className="load-more-state">读取记录中...</div>}
           {hasMoreSidebarRecords && <div ref={sidebarLoadMoreRef} className="load-more-sentinel" />}
         </div>
-      </aside>
+      </aside>}
 
       <main className="workspace">
-        <header className="topbar">
+        {isDesktopStudioLayout && !canManageModels && (
+          <header className="desktop-consumer-nav">
+            <div className="desktop-consumer-brand">
+              <span><Sparkles size={21} /></span>
+              <strong>美图精灵</strong>
+            </div>
+            <nav aria-label="桌面导航">
+              <button type="button" className="active">创作</button>
+              <button type="button" onClick={() => switchMobileStudioTab("works")}>作品</button>
+              <button type="button" onClick={() => platformUser ? switchMobileStudioTab("account") : openAuthPanel("login")}>我的</button>
+            </nav>
+            <div className="desktop-consumer-account">
+              <span className="desktop-points"><Sparkles size={15} /> {platformUser ? platformUser.points : 0} 积分</span>
+              <button type="button" onClick={() => platformUser ? switchMobileStudioTab("account") : openAuthPanel("login")}>
+                <span className="desktop-avatar"><img src={pcRecent4Url} alt="" /></span>
+                <strong>{platformUser ? platformUser.email.split("@")[0] : "登录"}</strong>
+                <ChevronRight size={15} />
+              </button>
+            </div>
+          </header>
+        )}
+        {(canManageModels || !isDesktopStudioLayout) && <header className="topbar">
           <div className="topbar-cluster">
             <SidebarToggleButton
               side="left"
@@ -7029,22 +7057,22 @@ function openAuthPanel(mode: "login" | "register" = "register") {
               />
             )}
           </div>
-        </header>
-        {isDesktopStudioLayout && (
-        <section className="consumer-studio-hub">
-          <article className="consumer-focus-card">
-            <div className="consumer-focus-copy">
-              <span className="eyebrow">Create</span>
-              <strong>{selectedAgent?.name || "选择行业，开始创作"}</strong>
-              <p>{selectedAgent?.scenario || "选择适合的行业模板，描述你想要的画面，平台会自动完成生成配置。"}</p>
-            </div>
-            <div className="consumer-focus-meta">
-              <span>{platformConfig.pointsPerGeneration} 积分/次</span>
-              <span>{selectedAspectRatio.value}</span>
-              <span>{params.batchCount} 张</span>
-            </div>
-          </article>
-          {canManageModels && <article className="consumer-model-panel">
+        </header>}
+        {isDesktopStudioLayout && canManageModels && (
+          <section className="consumer-studio-hub">
+            <article className="consumer-focus-card">
+              <div className="consumer-focus-copy">
+                <span className="eyebrow">Create</span>
+                <strong>{selectedAgent?.name || "选择行业，开始创作"}</strong>
+                <p>{selectedAgent?.scenario || "选择适合的行业模板，描述你想要的画面，平台会自动完成生成配置。"}</p>
+              </div>
+              <div className="consumer-focus-meta">
+                <span>{platformConfig.pointsPerGeneration} 积分/次</span>
+                <span>{selectedAspectRatio.value}</span>
+                <span>{params.batchCount} 张</span>
+              </div>
+            </article>
+            <article className="consumer-model-panel">
             <div className="consumer-panel-head">
               <strong>模型选择</strong>
               <small>{selectedModel ? selectedModel : "优先展示可直接用的图像模型"}</small>
@@ -7066,8 +7094,8 @@ function openAuthPanel(mode: "login" | "register" = "register") {
                 ))
               )}
             </div>
-          </article>}
-          <article className="consumer-agent-panel">
+            </article>
+            <article className="consumer-agent-panel">
             <div className="consumer-panel-head">
               <strong>行业模板</strong>
               <small>先做第一版高频场景</small>
@@ -7086,8 +7114,148 @@ function openAuthPanel(mode: "login" | "register" = "register") {
                 </button>
               ))}
             </div>
-          </article>
-        </section>
+            </article>
+          </section>
+        )}
+        {isDesktopStudioLayout && !canManageModels && (
+          <section className="desktop-create-workbench" aria-label="桌面创作页">
+            <aside className="desktop-create-left">
+              <article className="desktop-inspiration-card">
+                <img src={mobileInspirationSpringUrl} alt="" />
+                <div className="desktop-inspiration-shade" />
+                <strong>每日灵感</strong>
+                <div>
+                  <h2>春日花海</h2>
+                  <p>浪漫花海，春光明媚，治愈氛围</p>
+                </div>
+                <button type="button" onClick={() => updatePromptValue("春日花海，柔和自然光，通透氛围，细腻花瓣，适合品牌视觉")}>换一换</button>
+              </article>
+              <article className="desktop-panel desktop-industry-panel">
+                <h3>选择行业</h3>
+                <div className="desktop-industry-grid">
+                  {mobileTemplateAgents.map((agent) => (
+                    <button
+                      type="button"
+                      key={agent.id}
+                      className={selectedAgentId === agent.id ? "active" : ""}
+                      onClick={() => selectMobileIndustry(agent)}
+                    >
+                      <span><img src={MOBILE_INDUSTRY_THUMBNAILS[agent.id]} alt="" /></span>
+                      <strong>{agent.name}</strong>
+                      <small>{agent.tag}</small>
+                    </button>
+                  ))}
+                </div>
+              </article>
+            </aside>
+
+            <article className="desktop-panel desktop-create-center">
+              <header>
+                <h1>创作</h1>
+                <p>选择行业，描述想法，立即生成</p>
+              </header>
+              <section className="desktop-prompt-field">
+                <h3>描述你想要的画面</h3>
+                <div>
+                  <textarea
+                    ref={promptTextareaRef}
+                    value={prompt}
+                    onChange={(event) => updatePromptValue(event.target.value)}
+                    placeholder="例如：春天的花海，阳光明媚，浪漫治愈，高清细节"
+                    maxLength={800}
+                  />
+                  <small>{prompt.length}/800</small>
+                </div>
+              </section>
+              <div className="desktop-create-selects">
+                <label>
+                  <span>常用尺寸</span>
+                  <div>
+                    <Square size={18} />
+                    <select
+                      value={selectedMobileSizePresetId}
+                      onChange={(event) => {
+                        const preset = MOBILE_SIZE_PRESETS.find((item) => item.id === event.target.value);
+                        if (preset) selectMobileSizePreset(preset);
+                      }}
+                    >
+                      {MOBILE_SIZE_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.label} · {preset.ratio}</option>)}
+                    </select>
+                    <ChevronRight size={17} />
+                  </div>
+                </label>
+                <label>
+                  <span>生成数量</span>
+                  <div>
+                    <Database size={18} />
+                    <select value={params.batchCount} onChange={(event) => updateParams({ batchCount: Number(event.target.value) })}>
+                      {[1, 2, 4].map((count) => <option key={count} value={count}>{count} 张</option>)}
+                    </select>
+                    <ChevronRight size={17} />
+                  </div>
+                </label>
+              </div>
+              <section className="desktop-reference-section">
+                <h3>上传参考图</h3>
+                <div>
+                  <button type="button" className="desktop-reference-add" onClick={() => fileInputRef.current?.click()}>
+                    <Plus size={24} />
+                    <strong>上传图片</strong>
+                    <small>（可选）</small>
+                  </button>
+                  {referenceImages.length > 0 ? referenceImages.slice(0, 4).map((image) => (
+                    <button type="button" key={image.id} className="desktop-reference-thumb" onClick={() => removeReference(image.id)}>
+                      <X size={13} />
+                      {image.dataUrl ? <img src={image.thumbnailDataUrl || image.dataUrl} alt="" /> : <AlertCircle size={18} />}
+                    </button>
+                  )) : MOBILE_REFERENCE_TEMPLATE_IMAGES.map((imageUrl, index) => (
+                    <span className="desktop-reference-thumb" key={imageUrl}>
+                      <X size={13} />
+                      <img src={imageUrl} alt={`参考图 ${index + 1}`} />
+                    </span>
+                  ))}
+                </div>
+              </section>
+              <button type="button" className="desktop-generate-button" disabled={!canRequestGenerate} onClick={() => requestStartBatch()}>
+                <Sparkles size={22} />
+                立即生成
+              </button>
+              <input ref={fileInputRef} className="hidden-input" type="file" accept="image/*" multiple onChange={onReferenceInput} />
+            </article>
+
+            <aside className="desktop-create-right">
+              <article className="desktop-panel desktop-quality-panel">
+                <h3>图片质量 <span>?</span></h3>
+                <div>
+                  {MOBILE_QUALITY_TIERS.map((tier) => (
+                    <button
+                      type="button"
+                      key={tier.id}
+                      className={selectedMobileQualityTier.id === tier.id ? "active" : ""}
+                      onClick={() => updateParams({ quality: tier.quality })}
+                    >
+                      <span>{tier.icon === "image" ? <ImagePlus size={34} /> : tier.icon === "star" ? <Star size={34} /> : <Flame size={34} />}</span>
+                      <strong>{tier.label}<small>{tier.pointsLabel}</small></strong>
+                      {selectedMobileQualityTier.id === tier.id && <CheckCircle2 size={20} />}
+                    </button>
+                  ))}
+                </div>
+              </article>
+              <article className="desktop-panel desktop-recent-panel">
+                <header>
+                  <h3>最近作品</h3>
+                  <button type="button" onClick={() => switchMobileStudioTab("works")}>查看全部 <ChevronRight size={15} /></button>
+                </header>
+                <div>
+                  {PC_RECENT_TEMPLATE_IMAGES.map((imageUrl, index) => (
+                    <button type="button" key={imageUrl} onClick={() => switchMobileStudioTab("works")} aria-label={`查看作品 ${index + 1}`}>
+                      <img src={imageUrl} alt="" />
+                    </button>
+                  ))}
+                </div>
+              </article>
+            </aside>
+          </section>
         )}
         {isMobileCreateTabVisible && (
           <section className="mobile-studio-page mobile-create-page" aria-label="创作页">
@@ -7490,7 +7658,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
           </section>
         )}
 
-        {isDesktopStudioLayout && (
+        {isDesktopStudioLayout && canManageModels && (
         <section className="canvas" ref={canvasRef} onScroll={handleCanvasScroll}>
           {visibleRecords.length === 0 && !isLoadingMainRecords ? (
             <div className="empty-state">
@@ -7570,7 +7738,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
         </section>
         )}
 
-        {isDesktopStudioLayout && (
+        {isDesktopStudioLayout && canManageModels && (
         <form
           className={[
             "composer",
