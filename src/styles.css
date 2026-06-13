@@ -7473,7 +7473,7 @@ textarea:focus-visible {
     max-width: 390px;
     margin: 0 auto;
     gap: 8px;
-    padding: 26px 20px 84px 27px;
+    padding: 26px 20px 154px 27px;
   }
 
   .mobile-create-head,
@@ -7817,10 +7817,16 @@ textarea:focus-visible {
   }
 
   .mobile-generate-button {
+    position: fixed;
+    right: 16px;
+    bottom: calc(64px + env(safe-area-inset-bottom));
+    left: 16px;
+    z-index: 17;
     display: flex;
-    width: calc(100% + 14px);
+    width: auto;
+    max-width: 358px;
     min-height: 44px;
-    margin-left: -11px;
+    margin: 0 auto;
     align-items: center;
     justify-content: center;
     gap: 8px;

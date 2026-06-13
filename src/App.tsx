@@ -3593,6 +3593,7 @@ export default function App() {
   const isMobileCreateTabVisible = isMobileViewport && mobileStudioTab === "create";
   const isWorksTabVisible = isMobileViewport && mobileStudioTab === "works";
   const isAccountTabVisible = isMobileViewport && mobileStudioTab === "account";
+  const canManageModels = platformUser?.isAdmin === true;
 
   const visibleStats = useMemo(() => {
     return visibleRecords.reduce(
@@ -3669,12 +3670,18 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (activePage !== "studio" || !showOnboarding) return;
+    if (activePage !== "studio" || !showOnboarding || !canManageModels) return;
     setIsSettingsOpen(true);
     if (onboardingStep < 2) {
       setIsLeftSidebarOpen(false);
     }
-  }, [activePage, showOnboarding, onboardingStep]);
+  }, [activePage, showOnboarding, onboardingStep, canManageModels]);
+
+  useEffect(() => {
+    if (!isPlatformBootstrapping && !canManageModels) {
+      setIsSettingsOpen(false);
+    }
+  }, [isPlatformBootstrapping, canManageModels]);
 
   useEffect(() => {
     if (activePage !== "studio" || isAgentHintSeen || isAgentPanelOpen || isComposerCollapsed) {
@@ -6532,7 +6539,7 @@ export default function App() {
     if (window.location.hash !== "#studio") {
       window.history.pushState(null, "", "#studio");
     }
-    if (showOnboarding) {
+    if (showOnboarding && canManageModels) {
       setOnboardingStep(0);
       setIsSettingsOpen(true);
     }
@@ -6977,16 +6984,20 @@ function openAuthPanel(mode: "login" | "register" = "register") {
                 <strong>{platformConfig.serviceName}</strong>
                 <span>创作 / 作品 / 我的</span>
               </div>
-              <div className={`status-pill ${modelState.status}`}>
-                {modelState.status === "ready" ? <Wifi size={16} /> : <Settings2 size={16} />}
-                <span>{modelState.status === "ready" ? "模型已就绪" : modelState.message}</span>
-              </div>
+              {canManageModels && (
+                <div className={`status-pill ${modelState.status}`}>
+                  {modelState.status === "ready" ? <Wifi size={16} /> : <Settings2 size={16} />}
+                  <span>{modelState.status === "ready" ? "模型已就绪" : modelState.message}</span>
+                </div>
+              )}
             </div>
           </div>
-          <div className="current-model">
-            <span>当前模型</span>
-            <strong>{selectedModel ? `${formatModelDisplayName(selectedModel)} · ${selectedModel}` : "未选择"}</strong>
-          </div>
+          {canManageModels && (
+            <div className="current-model">
+              <span>当前模型</span>
+              <strong>{selectedModel ? `${formatModelDisplayName(selectedModel)} · ${selectedModel}` : "未选择"}</strong>
+            </div>
+          )}
           <div className="topbar-cluster right">
             <div className={`user-pill ${platformUser ? "signed-in" : "guest"}`}>
               <strong>{isPlatformBootstrapping ? "同步中..." : platformUser ? platformUser.email : "游客模式"}</strong>
@@ -7009,12 +7020,14 @@ function openAuthPanel(mode: "login" | "register" = "register") {
                 登录 / 注册
               </button>
             )}
-            <SidebarToggleButton
-              side="right"
-              open={isSettingsOpen}
-              title={isSettingsOpen ? "收起创作设置" : "打开创作设置"}
-              onClick={() => setIsSettingsOpen((value) => !value)}
-            />
+            {canManageModels && (
+              <SidebarToggleButton
+                side="right"
+                open={isSettingsOpen}
+                title={isSettingsOpen ? "收起创作设置" : "打开创作设置"}
+                onClick={() => setIsSettingsOpen((value) => !value)}
+              />
+            )}
           </div>
         </header>
         {isDesktopStudioLayout && (
@@ -7022,8 +7035,8 @@ function openAuthPanel(mode: "login" | "register" = "register") {
           <article className="consumer-focus-card">
             <div className="consumer-focus-copy">
               <span className="eyebrow">Create</span>
-              <strong>{selectedAgent?.name || "先选行业，再选模型"}</strong>
-              <p>{selectedAgent?.scenario || "第一版前台只保留行业、模型和成图参数，默认把技术配置留在后台。"}</p>
+              <strong>{selectedAgent?.name || "选择行业，开始创作"}</strong>
+              <p>{selectedAgent?.scenario || "选择适合的行业模板，描述你想要的画面，平台会自动完成生成配置。"}</p>
             </div>
             <div className="consumer-focus-meta">
               <span>{platformConfig.pointsPerGeneration} 积分/次</span>
@@ -7031,7 +7044,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
               <span>{params.batchCount} 张</span>
             </div>
           </article>
-          <article className="consumer-model-panel">
+          {canManageModels && <article className="consumer-model-panel">
             <div className="consumer-panel-head">
               <strong>模型选择</strong>
               <small>{selectedModel ? selectedModel : "优先展示可直接用的图像模型"}</small>
@@ -7053,7 +7066,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
                 ))
               )}
             </div>
-          </article>
+          </article>}
           <article className="consumer-agent-panel">
             <div className="consumer-panel-head">
               <strong>行业模板</strong>
@@ -7332,7 +7345,9 @@ function openAuthPanel(mode: "login" | "register" = "register") {
                 <strong>我的</strong>
               </div>
               <div className="mobile-page-actions">
-                <button type="button" title="账户设置" onClick={() => setIsSettingsOpen(true)}><Settings2 size={20} /></button>
+                {canManageModels && (
+                  <button type="button" title="模型设置" onClick={() => setIsSettingsOpen(true)}><Settings2 size={20} /></button>
+                )}
               </div>
             </div>
             <div className="mobile-account-card">
@@ -7363,11 +7378,13 @@ function openAuthPanel(mode: "login" | "register" = "register") {
                 <span>积分明细</span>
                 <ChevronRight size={16} />
               </button>
-              <button type="button" className="mobile-account-action" onClick={() => setIsSettingsOpen(true)}>
-                <Settings2 size={17} />
-                <span>账户设置</span>
-                <ChevronRight size={16} />
-              </button>
+              {canManageModels && (
+                <button type="button" className="mobile-account-action" onClick={() => setIsSettingsOpen(true)}>
+                  <Settings2 size={17} />
+                  <span>模型设置</span>
+                  <ChevronRight size={16} />
+                </button>
+              )}
               <button type="button" className="mobile-account-action" onClick={() => {}}>
                 <ShieldCheck size={17} />
                 <span>帮助与反馈</span>
@@ -8143,7 +8160,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
               aria-label="提示词"
               rows={1}
             />
-            {!isAgentModeEnabled && (
+            {!isAgentModeEnabled && canManageModels && (
               <button
                 type="button"
                 className={`composer-config-button ${isSettingsOpen ? "active" : ""}`}
@@ -8307,7 +8324,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
         </nav>
       </main>
 
-      <aside className={`settings-panel ${isSettingsOpen ? "open" : "closed"}`}>
+      {canManageModels && <aside className={`settings-panel ${isSettingsOpen ? "open" : "closed"}`}>
         <div className="panel-header">
           <div>
             <strong>创作设置</strong>
@@ -8531,7 +8548,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
             />
           </label>
         </section>
-      </aside>
+      </aside>}
 
       {previewItem && (
         <ImagePreviewModal
@@ -8559,7 +8576,7 @@ function openAuthPanel(mode: "login" | "register" = "register") {
           onConfirm={() => void confirmBulkDelete()}
         />
       )}
-      {showOnboarding && !isMobileViewport && (
+      {showOnboarding && !isMobileViewport && canManageModels && (
         <OnboardingGuide
           step={onboardingStep}
           canGenerate={canGenerate}
